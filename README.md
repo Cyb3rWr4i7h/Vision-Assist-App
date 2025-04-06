@@ -18,7 +18,18 @@ Identifies and reads text from printed materials, signs, or displays. Users can:
 ### 3. Color Detection
 Helps identify colors in the user's surroundings using the device camera. The app provides audio feedback about dominant colors detected.
 
-### 4. AI Assistant
+### 4. Navigation Assistant
+Provides real-time navigation assistance for visually impaired users:
+- Voice-guided turn-by-turn directions with distance and cardinal orientation
+- Initial voice announcement of direction and bearing to destination
+- Real-time updates on remaining distance and direction
+- Search for destinations by voice input
+- Nearby points of interest search (hospitals, bus stops, etc.)
+- Automatic rerouting and progress tracking
+- Fully accessible interface with voice feedback
+- Works with Google Maps APIs or in simplified mode without internet
+
+### 5. AI Assistant
 An intelligent conversational assistant that can:
 - Answer questions about the user's environment
 - Provide contextual help with other app features
@@ -31,11 +42,12 @@ An intelligent conversational assistant that can:
 - Flutter SDK (latest stable version recommended)
 - Android Studio or Visual Studio Code with Flutter extensions
 - An Android or iOS device/emulator for testing
+- Optional: Google Maps API key for enhanced navigation features
 
 ### Installation
 1. Clone the repository:
    ```
-   git clone https://github.com/yourusername/vision_assist.git
+   git clone https://github.com/OrangeRalph/vision_assist.git
    ```
 
 2. Navigate to the project directory:
@@ -76,6 +88,17 @@ An intelligent conversational assistant that can:
 - The app will identify dominant colors and speak their names
 - Tap the screen to capture and analyze colors in more detail
 
+### Navigation Assistant
+- Launch the app and select "Navigation Assistant"
+- Use the microphone button to speak your destination
+- The app will find the location and generate a route
+- Listen to the initial direction and distance announcement
+- Follow turn-by-turn voice instructions as you walk
+- Receive regular updates on your remaining distance and direction
+- Use bottom buttons to find nearby hospitals or bus stops
+- Tap "My Location" to recenter the map on your current position
+- Tap "Stop" to end navigation
+
 ### AI Assistant
 - Launch the app and select "AI Assistant"
 - Type a question or tap the microphone for voice input
@@ -90,6 +113,7 @@ Vision Assist is specifically designed with accessibility in mind:
 - Text-to-speech feedback
 - Simple, intuitive navigation
 - Compatibility with screen readers
+- Voice-controlled features throughout the app
 
 ## License
 
@@ -98,5 +122,7 @@ This project is licensed under the MIT License - see the LICENSE file for detail
 ## Acknowledgments
 
 - Google ML Kit for text recognition capabilities
-- OpenAI for the ChatGPT API
+- Google Maps Platform for navigation services
+- Google Cloud Speech-to-Text for voice recognition
+- Flutter TTS for text-to-speech capabilities
 - The Flutter team for the wonderful framework
