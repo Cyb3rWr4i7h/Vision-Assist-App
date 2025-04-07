@@ -7,6 +7,7 @@ import 'package:vision_assist/screens/text_recognition_screen.dart';
 import 'package:vision_assist/screens/ai_assistant_screen.dart';
 import 'package:vision_assist/screens/navigation_screen.dart';
 import 'package:vision_assist/screens/profile_screen.dart';
+import 'package:vision_assist/screens/qr_code_scanner_screen.dart';
 import 'package:vision_assist/services/cloud_vision_service.dart';
 import 'package:googleapis_auth/auth_io.dart';
 import 'package:http/http.dart' as http;
@@ -249,6 +250,7 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
 - Say "Open Object Detection" to detect objects around you
 - Say "Open Text Recognition" to read text
 - Say "Open Color Detection" to identify colors
+- Say "Open QR Code Scanner" to scan QR codes and barcodes
 - Say "Open AI Assistant" to chat with our AI
 - Say "Open Navigation" for assistance with navigation
 - Say "Open Profile" to manage your personal information
@@ -369,8 +371,10 @@ Double tap anywhere for quick access to object detection.''';
     } else if (lowerCommand == "open profile") {
       _flutterTts.speak('Opening profile');
       _navigateTo(const ProfileScreen());
-    } else if (lowerCommand == "help" || lowerCommand == "instructions") {
-      _speakInstructions();
+    } else if (lowerCommand == "open qr code scanner" ||
+        lowerCommand == "open qr scanner") {
+      _flutterTts.speak('Opening QR code scanner');
+      _navigateTo(const QrCodeScannerScreen());
     } else if (lowerCommand == "call emergency" ||
         lowerCommand == "emergency call" ||
         lowerCommand == "call emergency contact") {
@@ -443,6 +447,15 @@ Double tap anywhere for quick access to object detection.''';
         'begin profile',
         'view profile',
         'show profile',
+      ],
+      'qr': [
+        'open qr code scanner',
+        'open qr scanner',
+        'start qr code scanner',
+        'launch qr code scanner',
+        'begin qr code scanner',
+        'scan qr code',
+        'scan qr',
       ],
       'emergency': [
         'call emergency',
@@ -528,6 +541,10 @@ Double tap anywhere for quick access to object detection.''';
           _flutterTts.speak('Opening profile');
           _navigateTo(const ProfileScreen());
           return true;
+        case 'qr':
+          _flutterTts.speak('Opening QR code scanner');
+          _navigateTo(const QrCodeScannerScreen());
+          return true;
         case 'emergency':
           _flutterTts.speak('Calling emergency contact');
           _callEmergencyContact();
@@ -598,6 +615,7 @@ Double tap anywhere for quick access to object detection.''';
     const colorTerms = ['color', 'colour', 'colors', 'colours'];
     const aiTerms = ['ai', 'assistant', 'chat', 'talk'];
     const navTerms = ['navigation', 'navigate', 'direction', 'map', 'go to'];
+    const qrTerms = ['qr', 'code', 'scan', 'scanner', 'barcode'];
     const emergencyTerms = ['emergency', 'call', 'contact', 'help', 'sos'];
 
     // Count matches for each feature
@@ -606,6 +624,7 @@ Double tap anywhere for quick access to object detection.''';
     int colorScore = _countMatches(command, colorTerms);
     int aiScore = _countMatches(command, aiTerms);
     int navScore = _countMatches(command, navTerms);
+    int qrScore = _countMatches(command, qrTerms);
     int emergencyScore = _countMatches(command, emergencyTerms);
 
     // Find the highest score
@@ -615,6 +634,7 @@ Double tap anywhere for quick access to object detection.''';
       colorScore,
       aiScore,
       navScore,
+      qrScore,
       emergencyScore,
     ].reduce((a, b) => a > b ? a : b);
 
@@ -639,6 +659,10 @@ Double tap anywhere for quick access to object detection.''';
       } else if (navScore == maxScore) {
         _flutterTts.speak('Opening navigation assistant');
         _navigateTo(const NavigationScreen());
+        return true;
+      } else if (qrScore == maxScore) {
+        _flutterTts.speak('Opening QR code scanner');
+        _navigateTo(const QrCodeScannerScreen());
         return true;
       } else if (emergencyScore == maxScore) {
         _flutterTts.speak('Calling emergency contact');
@@ -804,6 +828,7 @@ To use this app, please say the COMPLETE commands exactly as follows:
 - Say "Open Object Detection" to detect objects around you
 - Say "Open Text Recognition" to read text
 - Say "Open Color Detection" to identify colors
+- Say "Open QR Code Scanner" to scan QR codes and barcodes
 - Say "Open AI Assistant" to chat with our AI
 - Say "Open Navigation" for assistance with navigation
 - Say "Open Profile" to manage your personal information

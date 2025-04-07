@@ -61,6 +61,29 @@ Helps identify colors in the user's surroundings using the device camera. The ap
 - Optimized for real-time processing on mobile devices
 - Works in various lighting conditions with automatic adjustment
 
+### 📱 QR Code Scanner
+Scans and interprets QR codes and barcodes with accessibility features for visually impaired users.
+
+![QR Code Scanner Demo](https://via.placeholder.com/400x200?text=QR+Code+Scanner+Screenshot)
+
+**Features:**
+- Scan QR codes and barcodes using device camera
+- Audio feedback about the scanned content
+- Haptic feedback when codes are detected
+- Accessible gestures for various actions (double tap to open, swipe to copy/share)
+- Works with different QR code types (URLs, phone numbers, emails, text)
+- Automatic content detection and appropriate handling
+- Flashlight toggle for low-light environments
+
+**Technical Implementation:**
+- Uses mobile_scanner for reliable and fast code detection
+- Real-time scanning with continuous feedback
+- Voice guidance throughout the scanning process
+- Adapts to different lighting conditions
+- Type detection and contextual handling of scanned content
+- Periodic audio cues for proper camera positioning
+- Accessible UI with large touch targets and high contrast
+
 ### 🗺️ Navigation Assistant
 Provides real-time navigation assistance for visually impaired users.
 
@@ -141,6 +164,8 @@ lib/
 - **Flutter Polyline Points ^2.1.0**: Route visualization
 - **Geolocator ^10.1.0**: Precise location tracking
 - **Share Plus ^7.2.2**: Content sharing capabilities
+- **Mobile Scanner ^3.5.5**: QR code and barcode scanning
+- **Vibration ^1.8.4**: Haptic feedback for scan detection
 
 ## 📋 Prerequisites
 
@@ -214,6 +239,18 @@ lib/
 2. Point your camera at colored objects
 3. The app will identify dominant colors and speak their names
 4. Tap the screen to capture and analyze colors in more detail
+
+### QR Code Scanner
+1. Launch the app and select "QR Code Scanner"
+2. Point your camera at a QR code or barcode
+3. The app will automatically detect and scan the code
+4. Listen to the audio feedback describing the content
+5. Use the following gestures:
+   - Double tap to open links, make calls, or send emails
+   - Swipe left to copy content to clipboard
+   - Swipe right to share content with other apps
+   - Long press to scan another code
+6. Toggle the flashlight using the button in the top-right corner
 
 ### Navigation Assistant
 1. Launch the app and select "Navigation Assistant"

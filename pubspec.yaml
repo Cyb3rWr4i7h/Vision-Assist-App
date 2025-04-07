@@ -50,6 +50,9 @@ dependencies:
   googleapis: ^11.4.0  # For Google Cloud Vision API
   shared_preferences: ^2.2.2  # For storing user profile data
   url_launcher: ^6.2.5  # For launching phone calls
+  mobile_scanner: ^3.5.5  # For QR code scanning
+  google_mlkit_barcode_scanning: ^0.10.0  # ML Kit barcode scanning
+  vibration: ^1.8.4  # For haptic feedback when QR code is detected
   
   # Google Maps and Navigation
   google_maps_flutter: ^2.5.0
