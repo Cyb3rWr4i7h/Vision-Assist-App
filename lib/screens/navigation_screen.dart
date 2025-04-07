@@ -22,9 +22,6 @@ class _NavigationScreenState extends State<NavigationScreen>
   final GoogleMapsService _mapsService = GoogleMapsService();
   final GoogleSpeechService _speechService = GoogleSpeechService();
   final FlutterTts _flutterTts = FlutterTts();
-
-  final Completer<GoogleMapController> _mapController =
-      Completer<GoogleMapController>();
   final TextEditingController _destinationController = TextEditingController();
 
   // State variables
@@ -51,6 +48,18 @@ class _NavigationScreenState extends State<NavigationScreen>
   // Add counter for location updates
   int _locationUpdateCount = 0;
 
+  String? _error;
+  List<Map<String, dynamic>> _alternativeRoutes = [];
+  Timer? _navigationUpdateTimer;
+  LatLng? _nextWaypoint;
+  double _remainingDistance = 0.0;
+  String _nextManeuver = '';
+  String _remainingTime = '';
+  bool _showAlternativeRoutes = false;
+
+  // Use a single map controller
+  GoogleMapController? _mapController;
+
   @override
   void initState() {
     super.initState();
@@ -66,6 +75,8 @@ class _NavigationScreenState extends State<NavigationScreen>
     _locationUpdateTimer?.cancel();
     _navigationInstructionTimer?.cancel();
     _stopTts();
+    _navigationUpdateTimer?.cancel();
+    _mapController?.dispose();
     super.dispose();
   }
 
@@ -86,6 +97,16 @@ class _NavigationScreenState extends State<NavigationScreen>
   // Initialize all required services
   Future<void> _initializeServices() async {
     setState(() => _isLoading = true);
+
+    // Try to get a default location (either stored or a common one)
+    // This ensures we have a valid location for the map to start with
+    LatLng defaultLocation = const LatLng(
+      28.6139,
+      77.2090,
+    ); // New Delhi as default
+    setState(() {
+      _currentLocation = defaultLocation;
+    });
 
     // Initialize text-to-speech
     await _flutterTts.setLanguage('en-US');
@@ -148,34 +169,72 @@ class _NavigationScreenState extends State<NavigationScreen>
   // Get current location
   Future<bool> _getCurrentLocation() async {
     try {
+      // Check if location service is enabled
+      bool serviceEnabled = await Geolocator.isLocationServiceEnabled();
+      if (!serviceEnabled) {
+        _speak(
+          'Location services are disabled. Please enable location services.',
+        );
+        setState(() {
+          _error = 'Location services are disabled';
+          _isLoading = false;
+        });
+        return false;
+      }
+
+      // Request permission if needed
+      LocationPermission permission = await Geolocator.checkPermission();
+      if (permission == LocationPermission.denied) {
+        permission = await Geolocator.requestPermission();
+        if (permission == LocationPermission.denied) {
+          _speak('Location permission denied');
+          setState(() {
+            _error = 'Location permission denied';
+            _isLoading = false;
+          });
+          return false;
+        }
+      }
+
+      if (permission == LocationPermission.deniedForever) {
+        _speak(
+          'Location permissions are permanently denied. Please enable them in settings.',
+        );
+        setState(() {
+          _error = 'Location permissions permanently denied';
+          _isLoading = false;
+        });
+        return false;
+      }
+
+      // Get the current position
       Position position = await Geolocator.getCurrentPosition(
         desiredAccuracy: LocationAccuracy.high,
       );
 
       setState(() {
         _currentLocation = LatLng(position.latitude, position.longitude);
-        _updateMarkers();
+        _error = null; // Clear any previous errors
       });
 
-      if (_mapController.isCompleted) {
-        try {
-          final controller = await _mapController.future;
-          controller.animateCamera(
-            CameraUpdate.newCameraPosition(
-              CameraPosition(target: _currentLocation!, zoom: 16.0),
-            ),
-          );
-        } catch (e) {
-          debugPrint('Error animating camera: $e');
-        }
+      // Update markers
+      _updateMarkers();
+
+      // Center map on current location if controller is available
+      if (_mapController != null && _currentLocation != null) {
+        _mapController!.animateCamera(
+          CameraUpdate.newLatLngZoom(_currentLocation!, 16),
+        );
       }
+
       return true;
     } catch (e) {
-      await _speak(
-        'Unable to get your current location. Please check your device settings.',
+      debugPrint('Error getting location: $e');
+      _speak(
+        'Unable to get your current location. Please check location permissions.',
       );
       setState(() {
-        _feedbackText = 'Location error: $e';
+        _error = 'Error getting location: $e';
         _isLoading = false;
       });
       return false;
@@ -277,157 +336,239 @@ class _NavigationScreenState extends State<NavigationScreen>
 
   // Get directions between current location and destination
   Future<void> _getDirections() async {
-    if (_currentLocation == null || _destinationLocation == null) return;
-
     setState(() {
       _isLoading = true;
-      _feedbackText = 'Getting directions...';
+      _error = null;
     });
 
     try {
-      if (_areGoogleApisAvailable) {
-        // Use Google Directions API if available
-        Map<String, dynamic> directions = await _mapsService.getDirections(
-          origin: _currentLocation!,
-          destination: _destinationLocation!,
-          mode: 'walking', // Default to walking for blind users
-        );
-
-        if (directions['status'] != 'OK' &&
-            directions['status'] != 'ZERO_RESULTS') {
-          debugPrint('Directions API error: ${directions['status']}');
-          // Fall back to simple straight line if API fails
-          _createStraightLineRoute();
-          return;
-        }
-
-        // Create polyline from API response
-        List<PointLatLng> polylinePoints = directions['polylinePoints'];
-        List<LatLng> polylineCoordinates = [];
-
-        for (var point in polylinePoints) {
-          polylineCoordinates.add(LatLng(point.latitude, point.longitude));
-        }
-
+      if (_currentLocation == null || _destinationLocation == null) {
         setState(() {
-          _polylines = {
-            Polyline(
-              polylineId: const PolylineId('route'),
-              color: Colors.blue,
-              points: polylineCoordinates,
-              width: 5,
-            ),
-          };
-
-          _distanceText = directions['distance'];
-          _durationText = directions['duration'];
-          _navigationSteps = directions['steps'];
-          _currentStepIndex = 0;
+          _error = 'Current location or destination is missing';
           _isLoading = false;
-          _feedbackText = 'Route found';
         });
+        return;
+      }
 
-        // Zoom to show the entire route
-        if (_mapController.isCompleted && polylineCoordinates.isNotEmpty) {
-          try {
-            final GoogleMapController controller = await _mapController.future;
-            LatLngBounds bounds = _getBounds(polylineCoordinates);
-            controller.animateCamera(CameraUpdate.newLatLngBounds(bounds, 50));
-          } catch (e) {
-            debugPrint('Error animating camera to bounds: $e');
+      final response = await _mapsService.getDirections(
+        origin: _currentLocation!,
+        destination: _destinationLocation!,
+        mode: 'driving', // Use driving mode for road navigation
+        alternatives: true, // Request alternative routes
+      );
+
+      if (response['status'] == 'OK') {
+        setState(() {
+          _isLoading = false;
+          _polylines.clear();
+          _markers.clear();
+
+          // Add main route polyline
+          final polyline = Polyline(
+            polylineId: const PolylineId('route'),
+            points:
+                response['polylinePoints']
+                    .map<LatLng>(
+                      (point) => LatLng(point.latitude, point.longitude),
+                    )
+                    .toList(),
+            color: Colors.blue,
+            width: 5,
+          );
+          _polylines.add(polyline);
+
+          // Store navigation steps
+          _navigationSteps = List<Map<String, dynamic>>.from(response['steps']);
+          _currentStepIndex = 0;
+
+          // Store alternative routes
+          _alternativeRoutes = List<Map<String, dynamic>>.from(
+            response['routes'],
+          );
+
+          // Store total distance and duration for display
+          _distanceText = response['distance'] ?? 'Unknown';
+          _durationText = response['duration'] ?? 'Unknown';
+
+          // Add alternative routes if enabled
+          if (_showAlternativeRoutes && _alternativeRoutes.length > 1) {
+            for (var i = 1; i < _alternativeRoutes.length; i++) {
+              final alternativePolyline = Polyline(
+                polylineId: PolylineId('route_$i'),
+                points:
+                    _alternativeRoutes[i]['polyline']
+                        .map<LatLng>(
+                          (point) => LatLng(point.latitude, point.longitude),
+                        )
+                        .toList(),
+                color: Colors.grey,
+                width: 3,
+              );
+              _polylines.add(alternativePolyline);
+            }
           }
-        }
 
-        // Announce route summary
-        _speak(
-          'Route found. Distance: ${directions['distance']}, estimated time: ${directions['duration']}. Starting navigation.',
-        );
+          // Add markers for origin, destination and waypoints
+          _markers.add(
+            Marker(
+              markerId: const MarkerId('origin'),
+              position: _currentLocation!,
+              icon: BitmapDescriptor.defaultMarkerWithHue(
+                BitmapDescriptor.hueGreen,
+              ),
+              infoWindow: const InfoWindow(title: 'Starting Point'),
+            ),
+          );
+
+          _markers.add(
+            Marker(
+              markerId: const MarkerId('destination'),
+              position: _destinationLocation!,
+              icon: BitmapDescriptor.defaultMarkerWithHue(
+                BitmapDescriptor.hueRed,
+              ),
+              infoWindow: InfoWindow(title: _destinationController.text),
+            ),
+          );
+
+          // If there are navigation steps, add markers for key turns
+          if (_navigationSteps.isNotEmpty) {
+            for (var i = 0; i < _navigationSteps.length; i += 4) {
+              // Add markers for every 4th step to avoid clutter
+              if (_navigationSteps[i]['maneuver_type'] != null &&
+                  _navigationSteps[i]['maneuver_type'] != '') {
+                _markers.add(
+                  Marker(
+                    markerId: MarkerId('step_$i'),
+                    position: LatLng(
+                      _navigationSteps[i]['start_location']['lat'],
+                      _navigationSteps[i]['start_location']['lng'],
+                    ),
+                    icon: BitmapDescriptor.defaultMarkerWithHue(
+                      BitmapDescriptor.hueYellow,
+                    ),
+                    infoWindow: InfoWindow(
+                      title: 'Step ${i + 1}',
+                      snippet: _navigationSteps[i]['clean_instructions'],
+                    ),
+                  ),
+                );
+              }
+            }
+          }
+
+          // Calculate route bounds for camera
+          final bounds = response['bounds'];
+          if (bounds != null && _mapController != null) {
+            _mapController!.animateCamera(
+              CameraUpdate.newLatLngBounds(
+                LatLngBounds(
+                  southwest: LatLng(
+                    bounds['southwest']['lat'],
+                    bounds['southwest']['lng'],
+                  ),
+                  northeast: LatLng(
+                    bounds['northeast']['lat'],
+                    bounds['northeast']['lng'],
+                  ),
+                ),
+                100, // Padding
+              ),
+            );
+          } else if (_mapController != null && _currentLocation != null) {
+            // Fallback camera position
+            _mapController!.animateCamera(
+              CameraUpdate.newLatLngZoom(_currentLocation!, 15),
+            );
+          }
+
+          // Announce the route information
+          final distance = response['distance'] ?? 'unknown distance';
+          final duration = response['duration'] ?? 'unknown time';
+          final trafficDuration = response['duration_in_traffic'];
+
+          String routeAnnouncement =
+              'Route found. $distance, taking about $duration';
+          if (trafficDuration != null) {
+            routeAnnouncement += ' in current traffic conditions';
+          }
+
+          _speak(routeAnnouncement);
+        });
       } else {
-        // Create simple route if Google Directions API is not available
-        _createStraightLineRoute();
+        setState(() {
+          _error = 'Could not get directions: ${response['status']}';
+          _isLoading = false;
+          // Fallback to a straight line if API returns error
+          _generateStraightLineRoute();
+        });
       }
     } catch (e) {
-      debugPrint('Error getting directions: $e');
-      // Fall back to simple straight line if there's an error
-      _createStraightLineRoute();
+      setState(() {
+        _error = 'Error getting directions: $e';
+        _isLoading = false;
+        // Fallback to a straight line if there's an exception
+        _generateStraightLineRoute();
+      });
     }
   }
 
   // Create a straight line route when Directions API is unavailable
-  void _createStraightLineRoute() {
+  void _generateStraightLineRoute() {
     if (_currentLocation == null || _destinationLocation == null) return;
 
-    // Calculate approximate distance
-    double distanceInMeters = Geolocator.distanceBetween(
-      _currentLocation!.latitude,
-      _currentLocation!.longitude,
-      _destinationLocation!.latitude,
-      _destinationLocation!.longitude,
-    );
-
-    // Calculate approximate walking time (assuming 1.4 m/s walking speed)
-    double walkingTimeMinutes = distanceInMeters / (1.4 * 60);
-
-    // Format distance and duration
-    String distanceText =
-        distanceInMeters >= 1000
-            ? '${(distanceInMeters / 1000).toStringAsFixed(1)} km'
-            : '${distanceInMeters.round()} m';
-
-    String durationText = '${walkingTimeMinutes.round()} min';
-
-    List<LatLng> polylineCoordinates = [
-      _currentLocation!,
-      _destinationLocation!,
-    ];
-
-    // Create a simple step
-    List<Map<String, dynamic>> simpleSteps = [
-      {
-        'html_instructions': 'Head toward your destination',
-        'distance': {'text': distanceText},
-        'duration': {'text': durationText},
-        'end_location': {
-          'lat': _destinationLocation!.latitude,
-          'lng': _destinationLocation!.longitude,
-        },
-      },
-    ];
-
     setState(() {
-      _polylines = {
-        Polyline(
-          polylineId: const PolylineId('route'),
-          color: Colors.blue,
-          points: polylineCoordinates,
-          width: 5,
+      _polylines.clear();
+
+      // Create a simple straight line route
+      final polyline = Polyline(
+        polylineId: const PolylineId('straight_route'),
+        points: [_currentLocation!, _destinationLocation!],
+        color: Colors.red,
+        width: 3,
+      );
+
+      _polylines.add(polyline);
+
+      _markers.add(
+        Marker(
+          markerId: const MarkerId('origin'),
+          position: _currentLocation!,
+          icon: BitmapDescriptor.defaultMarkerWithHue(
+            BitmapDescriptor.hueGreen,
+          ),
+          infoWindow: const InfoWindow(title: 'Starting Point'),
         ),
-      };
+      );
 
-      _distanceText = distanceText;
-      _durationText = durationText;
-      _navigationSteps = simpleSteps;
-      _currentStepIndex = 0;
+      _markers.add(
+        Marker(
+          markerId: const MarkerId('destination'),
+          position: _destinationLocation!,
+          icon: BitmapDescriptor.defaultMarkerWithHue(BitmapDescriptor.hueRed),
+          infoWindow: InfoWindow(title: _destinationController.text),
+        ),
+      );
+
+      // Calculate direct distance
+      final distanceInMeters = Geolocator.distanceBetween(
+        _currentLocation!.latitude,
+        _currentLocation!.longitude,
+        _destinationLocation!.latitude,
+        _destinationLocation!.longitude,
+      );
+
+      final distanceText =
+          distanceInMeters >= 1000
+              ? '${(distanceInMeters / 1000).toStringAsFixed(1)} km'
+              : '${distanceInMeters.round()} m';
+
+      _speak(
+        'Using simplified straight-line navigation. Distance to destination: $distanceText',
+      );
+
       _isLoading = false;
-      _feedbackText = 'Basic route created';
     });
-
-    // Zoom to show the entire route
-    if (_mapController.isCompleted) {
-      _mapController.future.then((controller) {
-        try {
-          LatLngBounds bounds = _getBounds(polylineCoordinates);
-          controller.animateCamera(CameraUpdate.newLatLngBounds(bounds, 50));
-        } catch (e) {
-          debugPrint('Error animating camera to bounds: $e');
-        }
-      });
-    }
-
-    // Announce basic route info
-    _speak(
-      'Basic route created. Distance: $distanceText, estimated time: $durationText. Starting navigation.',
-    );
   }
 
   // Calculate bounds for the route
@@ -455,242 +596,193 @@ class _NavigationScreenState extends State<NavigationScreen>
     );
   }
 
-  // Start navigation mode
+  // Start navigation with turn-by-turn directions
   void _startNavigation() {
-    if (_navigationSteps.isEmpty) return;
+    if (_navigationSteps.isEmpty) {
+      _speak('No navigation steps available. Please try again.');
+      return;
+    }
 
     setState(() {
       _isNavigating = true;
+
+      // Make sure we display the total distance and time information
+      if (_distanceText.isEmpty) {
+        _distanceText = 'Calculating...';
+      }
+      if (_durationText.isEmpty) {
+        _durationText = 'Calculating...';
+      }
     });
 
-    // Get bearing to destination and speak initial direction
-    _speakInitialDirectionAndDistance();
+    // Speak initial instructions
+    _announceCurrentStep();
 
-    // Speak the first instruction
-    _speakNavigationInstruction(_navigationSteps[0]);
-
-    // Start periodic location updates and navigation instructions
+    // Start periodic updates for navigation
     _startLocationUpdates();
     _startNavigationInstructions();
+
+    // Set up timer to periodically check location and update navigation
+    _navigationUpdateTimer = Timer.periodic(
+      const Duration(seconds: 5),
+      (_) => _updateNavigation(),
+    );
+
+    // Zoom to show current location and next waypoint
+    _updateMapForNavigation();
   }
 
-  // Calculate and speak the initial direction and distance
-  void _speakInitialDirectionAndDistance() {
-    if (_currentLocation == null || _destinationLocation == null) return;
+  // Stop active navigation
+  void _stopNavigation() {
+    setState(() {
+      _isNavigating = false;
+      _currentStepIndex = 0;
+      _distanceText = '';
+      _durationText = '';
+    });
 
-    // Calculate bearing
-    final bearing = _calculateBearing(
+    _navigationUpdateTimer?.cancel();
+    _navigationUpdateTimer = null;
+    _speak('Navigation stopped');
+  }
+
+  // Update navigation based on current location
+  Future<void> _updateNavigation() async {
+    if (!_isNavigating ||
+        _currentLocation == null ||
+        _navigationSteps.isEmpty) {
+      return;
+    }
+
+    // Get current step
+    final currentStep = _navigationSteps[_currentStepIndex];
+
+    // Extract end coordinates of current step
+    final stepEndLat = currentStep['end_location']['lat'];
+    final stepEndLng = currentStep['end_location']['lng'];
+    final stepEndPoint = LatLng(stepEndLat, stepEndLng);
+
+    // Calculate distance to the end of current step
+    final distanceToStepEnd = Geolocator.distanceBetween(
+      _currentLocation!.latitude,
+      _currentLocation!.longitude,
+      stepEndPoint.latitude,
+      stepEndPoint.longitude,
+    );
+
+    // Update UI with remaining info
+    setState(() {
+      _nextWaypoint = stepEndPoint;
+      _remainingDistance = distanceToStepEnd;
+      _nextManeuver = currentStep['clean_instructions'] ?? '';
+      _remainingTime = currentStep['duration']['text'] ?? '';
+    });
+
+    // If we're close enough to the end of this step, move to next step
+    if (distanceToStepEnd < 30 &&
+        _currentStepIndex < _navigationSteps.length - 1) {
+      _currentStepIndex++;
+      _announceCurrentStep();
+      _updateMapForNavigation();
+    }
+
+    // Check if we've reached the destination
+    final distanceToDestination = Geolocator.distanceBetween(
       _currentLocation!.latitude,
       _currentLocation!.longitude,
       _destinationLocation!.latitude,
       _destinationLocation!.longitude,
     );
 
-    // Convert bearing to cardinal direction
-    final direction = _getDirectionFromBearing(bearing);
-
-    // Calculate distance
-    final distance =
-        Geolocator.distanceBetween(
-          _currentLocation!.latitude,
-          _currentLocation!.longitude,
-          _destinationLocation!.latitude,
-          _destinationLocation!.longitude,
-        ).round();
-
-    // Format distance for speech
-    String distanceText =
-        distance >= 1000
-            ? '${(distance / 1000).toStringAsFixed(1)} kilometers'
-            : '$distance meters';
-
-    // Speak the initial direction and distance
-    _speak(
-      'Your destination is $distanceText away to the $direction. $direction is at ${bearing.round()} degrees.',
-    );
-  }
-
-  // Calculate bearing between two points
-  double _calculateBearing(
-    double startLat,
-    double startLng,
-    double endLat,
-    double endLng,
-  ) {
-    startLat = _toRadians(startLat);
-    startLng = _toRadians(startLng);
-    endLat = _toRadians(endLat);
-    endLng = _toRadians(endLng);
-
-    final y = math.sin(endLng - startLng) * math.cos(endLat);
-    final x =
-        math.cos(startLat) * math.sin(endLat) -
-        math.sin(startLat) * math.cos(endLat) * math.cos(endLng - startLng);
-
-    final bearingRadians = math.atan2(y, x);
-    final bearingDegrees = _toDegrees(bearingRadians);
-    return (bearingDegrees + 360) % 360; // Normalize to 0-360
-  }
-
-  // Convert degrees to radians
-  double _toRadians(double degrees) {
-    return degrees * (math.pi / 180.0);
-  }
-
-  // Convert radians to degrees
-  double _toDegrees(double radians) {
-    return radians * (180.0 / math.pi);
-  }
-
-  // Get cardinal direction from bearing
-  String _getDirectionFromBearing(double bearing) {
-    const directions = [
-      'north',
-      'northeast',
-      'east',
-      'southeast',
-      'south',
-      'southwest',
-      'west',
-      'northwest',
-      'north',
-    ];
-    return directions[(bearing / 45).round() % 8];
-  }
-
-  // Stop navigation mode
-  void _stopNavigation() {
-    setState(() {
-      _isNavigating = false;
-      _polylines = {};
-      _navigationSteps = [];
-      _currentStepIndex = 0;
-      _distanceText = '';
-      _durationText = '';
-    });
-
-    _locationUpdateTimer?.cancel();
-    _navigationInstructionTimer?.cancel();
-    _speak('Navigation stopped');
-  }
-
-  // Start periodic location updates
-  void _startLocationUpdates() {
-    _locationUpdateTimer?.cancel();
-    _locationUpdateTimer = Timer.periodic(const Duration(seconds: 5), (timer) {
-      _getCurrentLocation();
-      _checkRouteProgress();
-    });
-  }
-
-  // Start periodic navigation instructions
-  void _startNavigationInstructions() {
-    _navigationInstructionTimer?.cancel();
-    _navigationInstructionTimer = Timer.periodic(const Duration(seconds: 30), (
-      timer,
-    ) {
-      if (_navigationSteps.isNotEmpty &&
-          _currentStepIndex < _navigationSteps.length) {
-        _speakNavigationInstruction(_navigationSteps[_currentStepIndex]);
-      }
-    });
-  }
-
-  // Check progress along the route
-  void _checkRouteProgress() {
-    if (!_isNavigating || _currentLocation == null || _navigationSteps.isEmpty)
-      return;
-
-    if (_currentStepIndex < _navigationSteps.length) {
-      Map<String, dynamic> currentStep = _navigationSteps[_currentStepIndex];
-
-      // Ensure we have end_location data
-      if (currentStep['end_location'] == null) {
-        debugPrint('Missing end_location data for current step');
-        return;
-      }
-
-      LatLng endLocation = LatLng(
-        currentStep['end_location']['lat'],
-        currentStep['end_location']['lng'],
-      );
-
-      // Calculate distance to the end of the current step
-      double distanceInMeters = Geolocator.distanceBetween(
-        _currentLocation!.latitude,
-        _currentLocation!.longitude,
-        endLocation.latitude,
-        endLocation.longitude,
-      );
-
-      // Calculate bearing to end location
-      double bearing = _calculateBearing(
-        _currentLocation!.latitude,
-        _currentLocation!.longitude,
-        endLocation.latitude,
-        endLocation.longitude,
-      );
-      String direction = _getDirectionFromBearing(bearing);
-
-      // Update the feedback text with current distance and direction
-      setState(() {
-        _feedbackText =
-            '${distanceInMeters.round()} meters to go. Direction: $direction';
-      });
-
-      // Periodically announce remaining distance and direction
-      if (_locationUpdateCount % 3 == 0) {
-        // Every ~15 seconds (3 * 5 second timer)
-        String distanceText =
-            distanceInMeters >= 1000
-                ? '${(distanceInMeters / 1000).toStringAsFixed(1)} kilometers'
-                : '${distanceInMeters.round()} meters';
-
-        _speak(
-          '$distanceText remaining to your next turn. Continue heading $direction.',
-        );
-      }
-      _locationUpdateCount++;
-
-      // If within 20 meters of the end of the step, move to the next step
-      if (distanceInMeters < 20 &&
-          _currentStepIndex < _navigationSteps.length - 1) {
-        setState(() {
-          _currentStepIndex++;
-          _locationUpdateCount = 0; // Reset counter for new step
-        });
-
-        _speakNavigationInstruction(_navigationSteps[_currentStepIndex]);
-      }
-
-      // Check if we've reached the destination
-      if (_destinationLocation != null) {
-        double distanceToDestination = Geolocator.distanceBetween(
-          _currentLocation!.latitude,
-          _currentLocation!.longitude,
-          _destinationLocation!.latitude,
-          _destinationLocation!.longitude,
-        );
-
-        if (distanceToDestination < 20) {
-          _speak('You have reached your destination.');
-          _stopNavigation();
-        }
-      }
+    if (distanceToDestination < 30) {
+      _speak('You have arrived at your destination');
+      _stopNavigation();
     }
   }
 
-  // Speak navigation instruction
-  void _speakNavigationInstruction(Map<String, dynamic> step) {
-    String instruction =
-        step['html_instructions'] ?? 'Continue to your destination';
-    // Remove HTML tags from instruction
-    instruction = instruction.replaceAll(RegExp(r'<[^>]*>'), '');
-    _speak(instruction);
+  // Announce the current navigation step
+  void _announceCurrentStep() {
+    if (_currentStepIndex >= _navigationSteps.length) {
+      return;
+    }
+
+    final currentStep = _navigationSteps[_currentStepIndex];
+    final instruction =
+        currentStep['clean_instructions'] ?? 'Continue on the current road';
+    final distance = currentStep['distance']['text'] ?? '';
+
+    String announcement = instruction;
+    if (distance.isNotEmpty) {
+      announcement += ' for $distance';
+    }
+
+    _speak(announcement);
+  }
+
+  // Update map view during navigation
+  void _updateMapForNavigation() {
+    if (_currentLocation == null ||
+        _nextWaypoint == null ||
+        _mapController == null) {
+      return;
+    }
+
+    // Calculate bearing for the map camera
+    final bearing = Geolocator.bearingBetween(
+      _currentLocation!.latitude,
+      _currentLocation!.longitude,
+      _nextWaypoint!.latitude,
+      _nextWaypoint!.longitude,
+    );
+
+    // Update camera position
+    _mapController!.animateCamera(
+      CameraUpdate.newCameraPosition(
+        CameraPosition(
+          target: _currentLocation!,
+          zoom: 18.0,
+          tilt: 45.0,
+          bearing: bearing,
+        ),
+      ),
+    );
+
+    // Update current location marker to include heading
+    setState(() {
+      _markers.removeWhere(
+        (marker) => marker.markerId == const MarkerId('origin'),
+      );
+      _markers.add(
+        Marker(
+          markerId: const MarkerId('origin'),
+          position: _currentLocation!,
+          rotation: bearing,
+          icon: BitmapDescriptor.defaultMarkerWithHue(
+            BitmapDescriptor.hueGreen,
+          ),
+          infoWindow: const InfoWindow(title: 'Current Location'),
+        ),
+      );
+    });
+  }
+
+  // Toggle showing alternative routes
+  void _toggleAlternativeRoutes() {
+    setState(() {
+      _showAlternativeRoutes = !_showAlternativeRoutes;
+      // Refresh the directions to update polylines
+      _getDirections();
+    });
   }
 
   // Text to speech helper
   Future<void> _speak(String text) async {
+    // Don't speak if we're currently listening
+    if (_isListening) {
+      debugPrint('Skipping TTS while listening: $text');
+      return;
+    }
+
     await _stopTts(); // Stop any ongoing speech
 
     // Create a completer to track when speech is done
@@ -730,30 +822,81 @@ class _NavigationScreenState extends State<NavigationScreen>
 
   // Start listening for voice commands
   void _startListening() async {
-    setState(() {
-      _isListening = true;
-      _feedbackText = 'Listening...';
-    });
+    try {
+      // Stop any ongoing TTS to avoid conflict
+      await _stopTts();
 
-    // Speak the prompt and wait for it to complete before starting to listen
-    await _speak('Where would you like to go?');
+      // Reset the speech service to ensure a fresh state
+      await _speechService.reset();
 
-    // Add a small pause before starting to listen
-    await Future.delayed(const Duration(milliseconds: 300));
+      // Reset the state
+      setState(() {
+        _isListening = true;
+        _feedbackText = 'Listening...';
+        _destinationController.clear(); // Clear previous input
+      });
 
-    _speechService.startListening(
-      onResult: (text) {
-        setState(() {
-          _destinationController.text = text;
-          _feedbackText = 'You said: $text';
-        });
+      // Start listening for voice input
+      _speechService.startListening(
+        onResult: (text) async {
+          if (text.isNotEmpty) {
+            setState(() {
+              _destinationController.text = text;
+              _feedbackText = 'You said: $text';
+              _isListening =
+                  false; // Mark as not listening once we get a result
+            });
 
-        if (text.isNotEmpty) {
-          _speechService.stopListening();
-          _searchAndNavigate(text);
+            // Process the result
+            await _searchAndNavigate(text);
+          } else {
+            setState(() {
+              _isListening = false;
+              _feedbackText = 'Sorry, I didn\'t catch that.';
+            });
+          }
+        },
+      );
+
+      // Add a timer to stop listening after 10 seconds if no result
+      Future.delayed(const Duration(seconds: 10), () {
+        if (_isListening) {
+          _stopSpeechRecognition();
+          if (_destinationController.text.isEmpty) {
+            // Show visual feedback instead of speaking
+            if (mounted) {
+              ScaffoldMessenger.of(context).showSnackBar(
+                const SnackBar(
+                  content: Text('No speech detected. Please try again.'),
+                ),
+              );
+            }
+            setState(() {
+              _feedbackText = 'No speech detected. Please try again.';
+            });
+          }
         }
-      },
-    );
+      });
+    } catch (e) {
+      debugPrint('Error starting speech recognition: $e');
+      setState(() {
+        _isListening = false;
+        _feedbackText = 'Error starting speech recognition';
+      });
+    }
+  }
+
+  // Stop listening for voice commands
+  void _stopSpeechRecognition() async {
+    try {
+      await _speechService.stopListening();
+      setState(() {
+        _isListening = false;
+        _feedbackText = 'Listening stopped';
+      });
+    } catch (e) {
+      debugPrint('Error stopping speech recognition: $e');
+    }
   }
 
   // Search for nearby places of interest
@@ -869,215 +1012,428 @@ class _NavigationScreenState extends State<NavigationScreen>
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: const Text('Navigation Assistant'),
-        backgroundColor: Colors.deepPurple,
-        foregroundColor: Colors.white,
+        title: const Text('Navigation'),
+        actions: [
+          IconButton(
+            icon: const Icon(Icons.help_outline),
+            onPressed: _speakInstructions,
+            tooltip: 'Instructions',
+          ),
+        ],
       ),
-      body: Stack(
+      body: Column(
         children: [
-          // Google Map
-          _currentLocation == null
-              ? const Center(child: CircularProgressIndicator())
-              : GoogleMap(
-                onMapCreated: (GoogleMapController controller) {
-                  if (!_mapController.isCompleted) {
-                    _mapController.complete(controller);
-                    debugPrint('Map controller completed');
-                  } else {
-                    debugPrint('Map controller was already completed');
-                  }
-                },
-                initialCameraPosition: CameraPosition(
-                  target: _currentLocation!,
-                  zoom: 16.0,
-                ),
-                myLocationEnabled: true,
-                myLocationButtonEnabled: false,
-                zoomControlsEnabled: false,
-                markers: _markers,
-                polylines: _polylines,
-                compassEnabled: true,
-              ),
-
-          // Search bar
-          Positioned(
-            top: 10,
-            left: 10,
-            right: 10,
-            child: Container(
-              decoration: BoxDecoration(
-                color: Colors.white,
-                borderRadius: BorderRadius.circular(5),
-                boxShadow: [
-                  BoxShadow(
-                    color: Colors.grey.withOpacity(0.5),
-                    spreadRadius: 2,
-                    blurRadius: 5,
-                    offset: const Offset(0, 3),
-                  ),
-                ],
-              ),
-              child: TextField(
-                controller: _destinationController,
-                decoration: InputDecoration(
-                  hintText: 'Where to?',
-                  border: InputBorder.none,
-                  contentPadding: const EdgeInsets.symmetric(horizontal: 15),
-                  suffixIcon: IconButton(
-                    icon: Icon(
-                      _isListening ? Icons.mic : Icons.mic_none,
-                      color: _isListening ? Colors.red : Colors.grey,
+          // Search Bar
+          Padding(
+            padding: const EdgeInsets.all(10.0),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                // Instructions text
+                Padding(
+                  padding: const EdgeInsets.only(left: 12.0, bottom: 6.0),
+                  child: Text(
+                    'Tap the microphone icon to speak your destination',
+                    style: TextStyle(
+                      fontStyle: FontStyle.italic,
+                      color: Colors.blue[700],
                     ),
-                    onPressed: _startListening,
-                    tooltip: 'Voice Search',
                   ),
                 ),
-                onSubmitted: _searchAndNavigate,
-              ),
-            ),
-          ),
-
-          // API Status Indicator
-          if (!_areGoogleApisAvailable)
-            Positioned(
-              top: 60,
-              left: 10,
-              right: 10,
-              child: Container(
-                padding: const EdgeInsets.all(8),
-                decoration: BoxDecoration(
-                  color: Colors.orange.withOpacity(0.9),
-                  borderRadius: BorderRadius.circular(5),
-                ),
-                child: const Text(
-                  'Limited functionality: Google Maps APIs unavailable',
-                  style: TextStyle(color: Colors.white, fontSize: 12),
-                  textAlign: TextAlign.center,
-                ),
-              ),
-            ),
-
-          // Feedback text
-          Positioned(
-            bottom: 120,
-            left: 10,
-            right: 10,
-            child: Container(
-              padding: const EdgeInsets.all(10),
-              decoration: BoxDecoration(
-                color: Colors.black.withOpacity(0.7),
-                borderRadius: BorderRadius.circular(5),
-              ),
-              child: Text(
-                _feedbackText,
-                style: const TextStyle(color: Colors.white),
-                textAlign: TextAlign.center,
-              ),
-            ),
-          ),
-
-          // Navigation info panel
-          if (_isNavigating)
-            Positioned(
-              bottom: 170,
-              left: 10,
-              right: 10,
-              child: Container(
-                padding: const EdgeInsets.all(10),
-                decoration: BoxDecoration(
-                  color: Colors.deepPurple.withOpacity(0.9),
-                  borderRadius: BorderRadius.circular(5),
-                ),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(
-                      'To: ${_destinationController.text}',
-                      style: const TextStyle(
-                        color: Colors.white,
-                        fontWeight: FontWeight.bold,
+                // Enhanced search bar
+                TextField(
+                  controller: _destinationController,
+                  decoration: InputDecoration(
+                    labelText: 'Where do you want to go?',
+                    prefixIcon: const Icon(Icons.search),
+                    suffixIcon: Container(
+                      decoration: BoxDecoration(
+                        color: _isListening ? Colors.red[50] : Colors.blue[50],
+                        borderRadius: BorderRadius.circular(25),
+                      ),
+                      margin: const EdgeInsets.all(5.0),
+                      child: IconButton(
+                        icon: Icon(
+                          _isListening ? Icons.mic : Icons.mic_none,
+                          color: _isListening ? Colors.red : Colors.blue,
+                          size: 30, // Larger icon
+                        ),
+                        onPressed: () {
+                          if (_isListening) {
+                            _stopSpeechRecognition();
+                          } else {
+                            _startListening();
+                          }
+                        },
+                        tooltip:
+                            _isListening ? 'Stop listening' : 'Voice search',
                       ),
                     ),
-                    const SizedBox(height: 5),
-                    Row(
-                      children: [
-                        Text(
-                          'Distance: $_distanceText',
-                          style: const TextStyle(color: Colors.white),
+                    border: OutlineInputBorder(
+                      borderRadius: BorderRadius.circular(10.0),
+                    ),
+                    enabledBorder: OutlineInputBorder(
+                      borderRadius: BorderRadius.circular(10.0),
+                      borderSide: BorderSide(color: Colors.blue, width: 1.5),
+                    ),
+                    focusedBorder: OutlineInputBorder(
+                      borderRadius: BorderRadius.circular(10.0),
+                      borderSide: BorderSide(color: Colors.blue, width: 2.0),
+                    ),
+                  ),
+                  onSubmitted: (value) {
+                    if (value.isNotEmpty) {
+                      _searchAndNavigate(value);
+                    }
+                  },
+                ),
+              ],
+            ),
+          ),
+
+          // Map View
+          Expanded(
+            child: Stack(
+              children: [
+                // Google Map
+                GoogleMap(
+                  mapType: MapType.normal,
+                  initialCameraPosition: CameraPosition(
+                    target:
+                        _currentLocation ??
+                        const LatLng(
+                          28.6139,
+                          77.2090,
+                        ), // Default to New Delhi if location not available
+                    zoom: 15,
+                  ),
+                  myLocationEnabled: true,
+                  myLocationButtonEnabled: true,
+                  zoomControlsEnabled: true,
+                  compassEnabled: true,
+                  markers: _markers,
+                  polylines: _polylines,
+                  onMapCreated: _onMapCreated,
+                  padding: const EdgeInsets.only(
+                    bottom: 120,
+                  ), // Add padding to account for bottom UI elements
+                ),
+
+                // Loading indicator
+                if (_isLoading)
+                  const Center(child: CircularProgressIndicator()),
+
+                // Listening indicator
+                if (_isListening)
+                  Positioned(
+                    top: 20,
+                    left: 0,
+                    right: 0,
+                    child: Center(
+                      child: Container(
+                        padding: const EdgeInsets.symmetric(
+                          vertical: 8.0,
+                          horizontal: 16.0,
                         ),
-                        const SizedBox(width: 10),
-                        Text(
-                          'Time: $_durationText',
-                          style: const TextStyle(color: Colors.white),
+                        decoration: BoxDecoration(
+                          color: Colors.black.withOpacity(0.7),
+                          borderRadius: BorderRadius.circular(20),
+                        ),
+                        child: Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            Icon(Icons.mic, color: Colors.red, size: 24),
+                            const SizedBox(width: 8),
+                            Text(
+                              'Listening...',
+                              style: TextStyle(
+                                color: Colors.white,
+                                fontWeight: FontWeight.bold,
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ),
+                  ),
+
+                // Error message
+                if (_error != null)
+                  Positioned(
+                    bottom: 200,
+                    left: 20,
+                    right: 20,
+                    child: Container(
+                      padding: const EdgeInsets.all(10.0),
+                      decoration: BoxDecoration(
+                        color: Colors.red.withOpacity(0.8),
+                        borderRadius: BorderRadius.circular(10.0),
+                      ),
+                      child: Text(
+                        _error!,
+                        style: const TextStyle(color: Colors.white),
+                        textAlign: TextAlign.center,
+                      ),
+                    ),
+                  ),
+
+                // Navigation info panel (when actively navigating)
+                if (_isNavigating && _nextManeuver.isNotEmpty)
+                  Positioned(
+                    top: 10,
+                    left: 10,
+                    right: 10,
+                    child: Column(
+                      children: [
+                        // Current step navigation box
+                        Container(
+                          padding: const EdgeInsets.all(16.0),
+                          decoration: BoxDecoration(
+                            color: Colors.white,
+                            borderRadius: BorderRadius.circular(10.0),
+                            boxShadow: [
+                              BoxShadow(
+                                color: Colors.black.withOpacity(0.1),
+                                spreadRadius: 1,
+                                blurRadius: 3,
+                              ),
+                            ],
+                          ),
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Text(
+                                _nextManeuver,
+                                style: const TextStyle(
+                                  fontWeight: FontWeight.bold,
+                                  fontSize: 18,
+                                ),
+                              ),
+                              const SizedBox(height: 8),
+                              Row(
+                                mainAxisAlignment:
+                                    MainAxisAlignment.spaceBetween,
+                                children: [
+                                  Text(
+                                    'In ${_remainingDistance.toStringAsFixed(0)} meters',
+                                    style: const TextStyle(fontSize: 16),
+                                  ),
+                                  Text(
+                                    _remainingTime,
+                                    style: const TextStyle(fontSize: 16),
+                                  ),
+                                ],
+                              ),
+                            ],
+                          ),
+                        ),
+
+                        // Small gap between boxes
+                        const SizedBox(height: 8),
+
+                        // Total distance and time box
+                        Container(
+                          padding: const EdgeInsets.all(12.0),
+                          decoration: BoxDecoration(
+                            color: Colors.white.withOpacity(0.9),
+                            borderRadius: BorderRadius.circular(10.0),
+                            border: Border.all(
+                              color: Colors.blue.withOpacity(0.3),
+                              width: 1,
+                            ),
+                            boxShadow: [
+                              BoxShadow(
+                                color: Colors.black.withOpacity(0.05),
+                                spreadRadius: 1,
+                                blurRadius: 2,
+                              ),
+                            ],
+                          ),
+                          child: Row(
+                            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                            children: [
+                              // Total distance section
+                              Row(
+                                children: [
+                                  const Icon(
+                                    Icons.directions,
+                                    color: Colors.blue,
+                                    size: 22,
+                                  ),
+                                  const SizedBox(width: 8),
+                                  Text(
+                                    _distanceText.isNotEmpty
+                                        ? _distanceText
+                                        : 'Calculating...',
+                                    style: const TextStyle(
+                                      fontSize: 14,
+                                      fontWeight: FontWeight.bold,
+                                    ),
+                                  ),
+                                ],
+                              ),
+
+                              // Vertical divider
+                              Container(
+                                height: 24,
+                                width: 1,
+                                color: Colors.grey.withOpacity(0.5),
+                              ),
+
+                              // Total time section
+                              Row(
+                                children: [
+                                  const Icon(
+                                    Icons.access_time,
+                                    color: Colors.blue,
+                                    size: 22,
+                                  ),
+                                  const SizedBox(width: 8),
+                                  Text(
+                                    _durationText.isNotEmpty
+                                        ? _durationText
+                                        : 'Calculating...',
+                                    style: const TextStyle(
+                                      fontSize: 14,
+                                      fontWeight: FontWeight.bold,
+                                    ),
+                                  ),
+                                ],
+                              ),
+                            ],
+                          ),
                         ),
                       ],
                     ),
-                  ],
-                ),
-              ),
+                  ),
+              ],
             ),
+          ),
 
-          // Loading indicator
-          if (_isLoading)
-            Container(
-              color: Colors.black.withOpacity(0.3),
-              child: const Center(child: CircularProgressIndicator()),
+          // Action Buttons
+          Padding(
+            padding: const EdgeInsets.all(10.0),
+            child: Row(
+              mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+              children: [
+                ElevatedButton.icon(
+                  onPressed: _isNavigating ? _stopNavigation : _startNavigation,
+                  icon: Icon(_isNavigating ? Icons.stop : Icons.navigation),
+                  label: Text(_isNavigating ? 'Stop' : 'Start Navigation'),
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: _isNavigating ? Colors.red : Colors.green,
+                    foregroundColor: Colors.white,
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 16,
+                      vertical: 12,
+                    ),
+                  ),
+                ),
+                ElevatedButton.icon(
+                  onPressed: _toggleAlternativeRoutes,
+                  icon: Icon(
+                    _showAlternativeRoutes ? Icons.route : Icons.alt_route,
+                  ),
+                  label: Text(
+                    _showAlternativeRoutes
+                        ? 'Hide Alternatives'
+                        : 'Show Alternatives',
+                  ),
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: Colors.blue,
+                    foregroundColor: Colors.white,
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 16,
+                      vertical: 12,
+                    ),
+                  ),
+                ),
+              ],
             ),
+          ),
         ],
       ),
-
-      // Bottom action buttons
-      bottomNavigationBar: BottomAppBar(
-        color: Colors.white,
-        child: Row(
-          mainAxisAlignment: MainAxisAlignment.spaceEvenly,
-          children: [
-            _buildActionButton(
-              icon: Icons.my_location,
-              label: 'My Location',
-              onPressed: _getCurrentLocation,
-            ),
-            _buildActionButton(
-              icon: Icons.local_hospital,
-              label: 'Hospital',
-              onPressed: () => _searchNearbyPlaces('hospital'),
-            ),
-            _buildActionButton(
-              icon: Icons.bus_alert,
-              label: 'Bus Stop',
-              onPressed: () => _searchNearbyPlaces('bus_station'),
-            ),
-            _buildActionButton(
-              icon: _isNavigating ? Icons.stop : Icons.navigation,
-              label: _isNavigating ? 'Stop' : 'Start',
-              onPressed:
-                  _isNavigating
-                      ? _stopNavigation
-                      : () {
-                        if (_destinationLocation != null) {
-                          _getDirections();
-                        } else {
-                          _speak('Please enter a destination first');
-                        }
-                      },
-            ),
-          ],
-        ),
+      floatingActionButton: FloatingActionButton(
+        onPressed: _speakCurrentLocation,
+        tooltip: 'Speak Current Location',
+        child: const Icon(Icons.record_voice_over),
       ),
     );
   }
 
-  Widget _buildActionButton({
-    required IconData icon,
-    required String label,
-    required VoidCallback onPressed,
-  }) {
-    return Column(
-      mainAxisSize: MainAxisSize.min,
-      children: [
-        IconButton(icon: Icon(icon), onPressed: onPressed, tooltip: label),
-        Text(label, style: const TextStyle(fontSize: 12)),
-      ],
-    );
+  void _speakInstructions() {
+    _speak('''
+      Navigation Screen Instructions:
+      - Enter a destination in the search bar and press enter to search
+      - The map will show your route with turn-by-turn directions
+      - Tap "Start Navigation" to begin guided navigation
+      - The app will announce each turn as you approach it
+      - Tap "Show Alternatives" to view other possible routes
+      - Tap the microphone button to hear your current location
+      - Use the navigation controls on the map to zoom and pan
+    ''');
+  }
+
+  void _centerOnCurrentLocation() {
+    if (_currentLocation != null && _mapController != null) {
+      _mapController!.animateCamera(
+        CameraUpdate.newCameraPosition(
+          CameraPosition(target: _currentLocation!, zoom: 16.0),
+        ),
+      );
+    } else {
+      // If current location is not available yet, get it and then center
+      _getCurrentLocation().then((_) {
+        if (_currentLocation != null && _mapController != null) {
+          _mapController!.animateCamera(
+            CameraUpdate.newCameraPosition(
+              CameraPosition(target: _currentLocation!, zoom: 16.0),
+            ),
+          );
+        }
+      });
+    }
+  }
+
+  // Make the onMapCreated callback more robust
+  void _onMapCreated(GoogleMapController controller) {
+    setState(() {
+      _mapController = controller;
+    });
+
+    // Ensure we center on the current location immediately after map creation
+    // with a slight delay to allow the map to initialize fully
+    Future.delayed(const Duration(milliseconds: 300), () {
+      _centerOnCurrentLocation();
+    });
+  }
+
+  void _speakCurrentLocation() {
+    if (_currentLocation != null) {
+      _speak(
+        'Current location is ${_currentLocation!.latitude}, ${_currentLocation!.longitude}',
+      );
+    }
+  }
+
+  // Start location updates for navigation
+  void _startLocationUpdates() {
+    _locationUpdateTimer?.cancel();
+    _locationUpdateTimer = Timer.periodic(const Duration(seconds: 5), (timer) {
+      _getCurrentLocation();
+      _updateNavigation();
+    });
+  }
+
+  // Start periodic navigation instructions
+  void _startNavigationInstructions() {
+    _navigationInstructionTimer?.cancel();
+    _navigationInstructionTimer = Timer.periodic(const Duration(seconds: 30), (
+      timer,
+    ) {
+      if (_isNavigating && _currentStepIndex < _navigationSteps.length) {
+        _announceCurrentStep();
+      }
+    });
   }
 }

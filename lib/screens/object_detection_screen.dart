@@ -3,10 +3,11 @@ import 'package:camera/camera.dart';
 import 'package:flutter_tts/flutter_tts.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'package:path_provider/path_provider.dart';
-import 'package:vision_assist/services/object_detector.dart';
+import 'package:vision_assist/services/cloud_vision_service.dart';
 import 'package:vision_assist/widgets/object_detection_view.dart';
 import 'dart:io';
 import 'dart:async';
+import 'package:image/image.dart' as img_lib;
 
 class ObjectDetectionScreen extends StatefulWidget {
   const ObjectDetectionScreen({super.key});
@@ -27,19 +28,37 @@ class _ObjectDetectionScreenState extends State<ObjectDetectionScreen>
   int _selectedCameraIndex = 0;
   Timer? _continuousDetectionTimer;
 
-  // Object detection related
-  final ObjectDetector _objectDetector = ObjectDetector();
+  // Object detection related - updated to use Cloud Vision
+  final CloudVisionService _cloudVisionService = CloudVisionService();
   File? _imageFile;
   List<DetectedObject> _detectedObjects = [];
+  List<DetectedColor> _detectedColors = [];
+
+  // Detection confidence threshold
+  double _confidenceThreshold = 0.15; // Initial value (15%)
+
+  // UI Controls visibility
+  bool _showSettings = false;
+  bool _showColors = false;
 
   // Store the detection history for tracking objects over time
   List<String> _detectionHistory = [];
   final int _maxHistoryItems = 5;
 
+  // New variables for the new processing logic
+  bool _canProcess = true;
+  bool _isBusy = false;
+  DateTime _lastSpokenTime = DateTime.fromMillisecondsSinceEpoch(0);
+  DateTime _lastNoObjectTime = DateTime.fromMillisecondsSinceEpoch(0);
+  bool _shouldSpeak = true;
+  bool _isListening = true;
+  String _feedbackText = '';
+
   @override
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
+    _initializeObjectDetector();
     _initializeCamera();
     _initializeTts();
   }
@@ -76,38 +95,29 @@ class _ObjectDetectionScreenState extends State<ObjectDetectionScreen>
 
           _cameraController = CameraController(
             _cameras[_selectedCameraIndex],
-            ResolutionPreset.high,
+            ResolutionPreset.medium,
             enableAudio: false,
-            imageFormatGroup: ImageFormatGroup.jpeg,
+            imageFormatGroup: ImageFormatGroup.yuv420,
           );
 
-          await _cameraController!.initialize();
+          try {
+            await _cameraController!.initialize();
 
-          // Check if flash is available
-          if (_cameraController!.value.isInitialized) {
-            try {
-              if (_cameraController!.description.lensDirection ==
-                  CameraLensDirection.back) {
-                // Flash is typically only available on the back camera
-                await _cameraController!.setFlashMode(
-                  _isFlashOn ? FlashMode.torch : FlashMode.off,
-                );
-              }
-            } catch (e) {
-              print('Flash not available: $e');
-              _isFlashOn = false;
+            // We don't want to process the image stream automatically anymore
+            // only when the user taps the capture button
+
+            if (mounted) {
+              setState(() {
+                _isCameraInitialized = true;
+              });
             }
-          }
 
-          if (mounted) {
-            setState(() {
-              _isCameraInitialized = true;
-            });
-          }
-
-          // Resume continuous detection if it was on
-          if (_isContinuousDetection) {
-            _startContinuousDetection();
+            _speak(
+              "Camera initialized. Point the camera at objects and tap the capture button.",
+            );
+          } catch (e) {
+            print('Error initializing camera: $e');
+            _speak("Could not initialize camera. ${e.toString()}");
           }
         }
       } catch (e) {
@@ -232,11 +242,15 @@ class _ObjectDetectionScreenState extends State<ObjectDetectionScreen>
 
     setState(() {
       _isDetecting = true;
+      _detectedObjects = []; // Clear previous detections
+      _detectedColors = []; // Clear previous colors
     });
 
     try {
       // Capture image
+      print('Taking picture for object detection...');
       final XFile photo = await _cameraController!.takePicture();
+      print('Picture taken: ${photo.path}');
 
       // Save image to temp file
       final tempDir = await getTemporaryDirectory();
@@ -244,38 +258,55 @@ class _ObjectDetectionScreenState extends State<ObjectDetectionScreen>
         '${tempDir.path}/object_detection_${DateTime.now().millisecondsSinceEpoch}.jpg',
       );
       await File(photo.path).copy(tempFile.path);
+      print('Image copied to temporary file: ${tempFile.path}');
 
       // Update the UI with the captured image
       setState(() {
         _imageFile = tempFile;
       });
 
-      // Perform object detection
-      final detectedObjects = await _objectDetector.detectObjectsFromImage(
-        tempFile,
+      // Provide feedback to the user
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Processing image with Google Cloud Vision API...'),
+          duration: Duration(seconds: 1),
+        ),
       );
 
+      // Perform object detection with the current confidence threshold
+      print(
+        'Starting object detection process with threshold: $_confidenceThreshold',
+      );
+      final detectedObjects = await _cloudVisionService.detectObjectsFromImage(
+        tempFile,
+        confidenceThreshold: _confidenceThreshold, // Pass the current threshold
+      );
+      print('Detection completed, found ${detectedObjects.length} objects');
+
+      // Perform color detection
+      print('Starting color detection process');
+      final detectedColors = await _cloudVisionService.detectColorsFromImage(
+        tempFile,
+      );
+      print('Color detection completed, found ${detectedColors.length} colors');
+
       // Update UI and detect history only if we have new results
-      // and we're not in continuous mode (to avoid UI flicker)
-      if (detectedObjects.isNotEmpty || !_isContinuousDetection) {
-        // Find new objects that weren't in previous detection
-        final Set<String> currentLabels =
-            detectedObjects.map((obj) => obj.label).toSet();
-
-        final Set<String> previousLabels =
-            _detectedObjects.isEmpty
-                ? {}
-                : _detectedObjects.map((obj) => obj.label).toSet();
-
-        final Set<String> newObjects = currentLabels.difference(previousLabels);
-
-        // Update the UI with the detected objects
+      if (mounted) {
         setState(() {
-          _detectedObjects = detectedObjects;
+          // If we have objects, keep only the first one (most confident)
+          if (detectedObjects.isNotEmpty) {
+            _detectedObjects = [detectedObjects.first];
+          } else {
+            _detectedObjects = [];
+          }
+
+          _detectedColors = detectedColors;
 
           // Update detection history with new objects
-          if (newObjects.isNotEmpty) {
-            _detectionHistory.addAll(newObjects);
+          if (detectedObjects.isNotEmpty) {
+            final Set<String> newLabels =
+                detectedObjects.map((obj) => obj.label).toSet();
+            _detectionHistory.addAll(newLabels);
             // Keep history at reasonable size
             if (_detectionHistory.length > _maxHistoryItems) {
               _detectionHistory = _detectionHistory.sublist(
@@ -285,31 +316,79 @@ class _ObjectDetectionScreenState extends State<ObjectDetectionScreen>
           }
         });
 
-        // Speak the detected objects if there are new ones
-        if (newObjects.isNotEmpty && !_isContinuousDetection) {
-          final objectsText =
-              newObjects.length == 1
-                  ? 'I see a ${newObjects.first}'
-                  : 'I see ${newObjects.length} objects: ${newObjects.join(", ")}';
-          await _flutterTts.speak(objectsText);
-        } else if (detectedObjects.isEmpty && !_isContinuousDetection) {
-          await _flutterTts.speak('No objects detected');
+        // Speak the detected objects and colors
+        if (detectedObjects.isNotEmpty) {
+          // Get the primary object
+          final primaryObject = detectedObjects.first;
+          String objectText =
+              'I see a ${primaryObject.label} with confidence ${(primaryObject.confidence * 100).toInt()}%';
+
+          // If we have color information, add the first detected color
+          if (detectedColors.isNotEmpty) {
+            objectText += '. The main color is ${detectedColors.first.name}';
+          }
+
+          await _flutterTts.speak(objectText);
+        } else {
+          print('No objects detected in the image');
+          await _flutterTts.speak(
+            'No objects detected. Please try pointing the camera at a different object.',
+          );
+
+          // Show a helpful message to the user
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text(
+                'Try pointing the camera at a clearer object or in better lighting',
+              ),
+              duration: Duration(seconds: 3),
+            ),
+          );
         }
       }
     } catch (e) {
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(SnackBar(content: Text('Error during detection: $e')));
-    } finally {
-      setState(() {
-        _isDetecting = false;
-      });
+      print('Error during object detection: $e');
 
-      // In continuous mode, return to the camera preview after detection
-      if (_isContinuousDetection && mounted) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Error during detection: $e'),
+            backgroundColor: Colors.red,
+          ),
+        );
+
+        // Still provide feedback even if there was an error
+        await _flutterTts.speak(
+          'Sorry, there was a problem detecting objects. Please try again.',
+        );
+      }
+    } finally {
+      if (mounted) {
         setState(() {
-          _imageFile = null;
+          _isDetecting = false;
         });
+
+        // We don't automatically go back to camera view now
+        // The user must explicitly tap the "Back to Camera" button
+        _stopContinuousDetection(); // Always stop continuous detection after capture
+      }
+    }
+  }
+
+  Future<void> _initializeObjectDetector() async {
+    try {
+      print('Initializing Google Cloud Vision API for object detection...');
+      await _cloudVisionService.initialize();
+      print('Google Cloud Vision API initialized successfully');
+    } catch (e) {
+      print('Error initializing Cloud Vision API: $e');
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Error initializing Cloud Vision API: $e'),
+            backgroundColor: Colors.red,
+          ),
+        );
       }
     }
   }
@@ -320,7 +399,7 @@ class _ObjectDetectionScreenState extends State<ObjectDetectionScreen>
     _stopContinuousDetection();
     _cameraController?.dispose();
     _flutterTts.stop();
-    _objectDetector.dispose();
+    _cloudVisionService.dispose();
     super.dispose();
   }
 
@@ -328,10 +407,33 @@ class _ObjectDetectionScreenState extends State<ObjectDetectionScreen>
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: const Text('Object Detection'),
+        title: const Text('Object & Color Detection'),
         backgroundColor: Colors.blue,
         foregroundColor: Colors.white,
         actions: [
+          // Settings button
+          IconButton(
+            icon: Icon(
+              _showSettings ? Icons.settings : Icons.settings_outlined,
+            ),
+            onPressed: () {
+              setState(() {
+                _showSettings = !_showSettings;
+              });
+            },
+            tooltip: 'Detection Settings',
+          ),
+          // Color toggle button
+          if (_imageFile != null && _detectedColors.isNotEmpty)
+            IconButton(
+              icon: Icon(_showColors ? Icons.palette : Icons.palette_outlined),
+              onPressed: () {
+                setState(() {
+                  _showColors = !_showColors;
+                });
+              },
+              tooltip: 'Toggle Color Info',
+            ),
           // Camera switch button
           if (_cameras.length > 1)
             IconButton(
@@ -347,16 +449,6 @@ class _ObjectDetectionScreenState extends State<ObjectDetectionScreen>
               onPressed: _toggleFlash,
               tooltip: 'Toggle flash',
             ),
-          // Continuous detection toggle
-          IconButton(
-            icon: Icon(
-              _isContinuousDetection
-                  ? Icons.autorenew
-                  : Icons.autorenew_outlined,
-            ),
-            onPressed: _toggleContinuousDetection,
-            tooltip: 'Toggle continuous detection',
-          ),
           // Reset button
           IconButton(
             icon: const Icon(Icons.refresh),
@@ -364,6 +456,7 @@ class _ObjectDetectionScreenState extends State<ObjectDetectionScreen>
               setState(() {
                 _imageFile = null;
                 _detectedObjects = [];
+                _detectedColors = [];
                 // Don't clear history
               });
             },
@@ -372,32 +465,46 @@ class _ObjectDetectionScreenState extends State<ObjectDetectionScreen>
         ],
       ),
       body: SafeArea(
-        child:
-            _isCameraInitialized
-                ? _imageFile == null
-                    ? _buildCameraPreview()
-                    : ObjectDetectionView(
-                      imageFile: _imageFile,
-                      detectedObjects: _detectedObjects,
-                      onDetectPressed: _detectObjects,
-                      isProcessing: _isDetecting,
-                      detectionHistory: _detectionHistory,
-                      onReset: () {
-                        setState(() {
-                          _imageFile = null;
-                        });
-                      },
-                    )
-                : const Center(
-                  child: Column(
-                    mainAxisAlignment: MainAxisAlignment.center,
-                    children: [
-                      CircularProgressIndicator(),
-                      SizedBox(height: 16),
-                      Text('Initializing camera...'),
-                    ],
-                  ),
-                ),
+        child: Column(
+          children: [
+            // Settings panel
+            if (_showSettings) _buildSettingsPanel(),
+
+            // Main content
+            Expanded(
+              child:
+                  _isCameraInitialized
+                      ? _imageFile == null
+                          ? _buildCameraPreview()
+                          : ObjectDetectionView(
+                            imageFile: _imageFile,
+                            detectedObjects: _detectedObjects,
+                            detectedColors:
+                                _showColors ? _detectedColors : null,
+                            onDetectPressed: _detectObjects,
+                            isProcessing: _isDetecting,
+                            detectionHistory: _detectionHistory,
+                            onReset: () {
+                              setState(() {
+                                _imageFile = null;
+                                _detectedObjects = [];
+                                _detectedColors = [];
+                              });
+                            },
+                          )
+                      : const Center(
+                        child: Column(
+                          mainAxisAlignment: MainAxisAlignment.center,
+                          children: [
+                            CircularProgressIndicator(),
+                            SizedBox(height: 16),
+                            Text('Initializing camera...'),
+                          ],
+                        ),
+                      ),
+            ),
+          ],
+        ),
       ),
       floatingActionButton:
           _imageFile == null && _isCameraInitialized
@@ -409,6 +516,79 @@ class _ObjectDetectionScreenState extends State<ObjectDetectionScreen>
               )
               : null,
       floatingActionButtonLocation: FloatingActionButtonLocation.centerFloat,
+    );
+  }
+
+  Widget _buildSettingsPanel() {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+      color: Colors.grey.shade100,
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            children: [
+              const Text(
+                'Detection Settings',
+                style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16),
+              ),
+              IconButton(
+                icon: const Icon(Icons.close),
+                onPressed: () {
+                  setState(() {
+                    _showSettings = false;
+                  });
+                },
+                tooltip: 'Close settings',
+              ),
+            ],
+          ),
+          const SizedBox(height: 8),
+
+          // Confidence threshold slider
+          Row(
+            children: [
+              const Text('Confidence threshold: '),
+              Expanded(
+                child: Slider(
+                  value: _confidenceThreshold,
+                  min: 0.05,
+                  max: 0.5,
+                  divisions: 9,
+                  label: '${(_confidenceThreshold * 100).toInt()}%',
+                  onChanged: (value) {
+                    setState(() {
+                      _confidenceThreshold = value;
+                      // Apply new threshold to existing detections if we have any
+                      if (_detectedObjects.isNotEmpty && _imageFile != null) {
+                        _detectedObjects =
+                            _detectedObjects
+                                .where(
+                                  (obj) =>
+                                      obj.confidence >= _confidenceThreshold,
+                                )
+                                .toList();
+                      }
+                    });
+                  },
+                ),
+              ),
+              Text('${(_confidenceThreshold * 100).toInt()}%'),
+            ],
+          ),
+
+          const Text(
+            'Lower values show more objects with less certainty. Higher values show fewer, more certain objects.',
+            style: TextStyle(
+              fontSize: 12,
+              color: Colors.grey,
+              fontStyle: FontStyle.italic,
+            ),
+          ),
+        ],
+      ),
     );
   }
 
@@ -440,12 +620,54 @@ class _ObjectDetectionScreenState extends State<ObjectDetectionScreen>
                 color: Colors.black.withOpacity(0.6),
                 borderRadius: BorderRadius.circular(20),
               ),
-              child: Text(
-                _isContinuousDetection
-                    ? 'Continuous detection mode ON'
-                    : 'Point camera at objects to detect',
-                style: const TextStyle(color: Colors.white, fontSize: 16),
+              child: Column(
+                children: [
+                  const Text(
+                    'Point camera at objects to detect',
+                    style: TextStyle(
+                      color: Colors.white,
+                      fontSize: 16,
+                      fontWeight: FontWeight.bold,
+                    ),
+                  ),
+                  const SizedBox(height: 4),
+                  const Text(
+                    'Tap the capture button to analyze',
+                    style: TextStyle(color: Colors.white70, fontSize: 12),
+                  ),
+                ],
               ),
+            ),
+          ),
+        ),
+
+        // Help information
+        Positioned(
+          top: 100,
+          left: 20,
+          right: 20,
+          child: Container(
+            padding: const EdgeInsets.all(12),
+            decoration: BoxDecoration(
+              color: Colors.blue.withOpacity(0.7),
+              borderRadius: BorderRadius.circular(12),
+            ),
+            child: Column(
+              children: const [
+                Text(
+                  'Tips for better detection:',
+                  style: TextStyle(
+                    color: Colors.white,
+                    fontWeight: FontWeight.bold,
+                    fontSize: 14,
+                  ),
+                ),
+                SizedBox(height: 4),
+                Text(
+                  '• Center the object in frame\n• Ensure good lighting\n• Hold device steady\n• Try different angles',
+                  style: TextStyle(color: Colors.white, fontSize: 12),
+                ),
+              ],
             ),
           ),
         ),
@@ -489,5 +711,27 @@ class _ObjectDetectionScreenState extends State<ObjectDetectionScreen>
           ),
       ],
     );
+  }
+
+  void _speakResults(String text) async {
+    if (!_isListening) return;
+
+    try {
+      print('Speaking: $text');
+      await _flutterTts.speak(text);
+    } catch (e) {
+      print('Error speaking results: $e');
+    }
+  }
+
+  void _speak(String text) async {
+    if (!_isListening) return;
+
+    try {
+      print('Speaking: $text');
+      await _flutterTts.speak(text);
+    } catch (e) {
+      print('Error speaking: $e');
+    }
   }
 }

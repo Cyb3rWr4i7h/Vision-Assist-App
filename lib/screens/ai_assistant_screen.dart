@@ -4,6 +4,7 @@ import 'dart:math';
 import 'package:vision_assist/services/ai_service.dart';
 import 'package:speech_to_text/speech_to_text.dart';
 import 'package:permission_handler/permission_handler.dart';
+import 'dart:async';
 
 class AIAssistantScreen extends StatefulWidget {
   const AIAssistantScreen({super.key});
@@ -24,6 +25,8 @@ class _AIAssistantScreenState extends State<AIAssistantScreen> {
   bool _isListening = false;
   String _lastWords = '';
   bool _speechEnabled = false;
+  Timer? _speechTimeoutTimer;
+  DateTime _lastSoundDetectedTime = DateTime.now();
 
   bool _isTyping = false;
   bool _isReadingResponse = false;
@@ -83,8 +86,36 @@ class _AIAssistantScreenState extends State<AIAssistantScreen> {
       // Process the recognized text if we have any
       if (_lastWords.isNotEmpty) {
         _handleSubmitted(_lastWords);
-        _lastWords = '';
+        setState(() {
+          _lastWords = '';
+          _messageController.clear(); // Clear the text field
+        });
+
+        // Reset speech recognition to ensure it's ready for the next session
+        Future.delayed(const Duration(milliseconds: 500), () {
+          _resetSpeechRecognition();
+        });
       }
+    }
+  }
+
+  // Reset speech recognition if it gets stuck
+  void _resetSpeechRecognition() async {
+    if (_speech.isAvailable) {
+      await _speech.stop();
+    }
+
+    // Reinitialize
+    try {
+      _speechEnabled = await _speech.initialize(
+        onStatus: (status) => _onSpeechStatus(status),
+        onError:
+            (errorNotification) =>
+                print('Speech recognition error: $errorNotification'),
+      );
+      print('Speech recognition reset: $_speechEnabled');
+    } catch (e) {
+      print('Error resetting speech recognition: $e');
     }
   }
 
@@ -93,9 +124,21 @@ class _AIAssistantScreenState extends State<AIAssistantScreen> {
     // Stop any ongoing TTS to avoid conflict
     await _stopReading();
 
+    // If already listening, stop first
+    if (_isListening) {
+      _stopListening();
+      await Future.delayed(const Duration(milliseconds: 300));
+    }
+
+    // Reset speech recognition to ensure clean state
+    _resetSpeechRecognition();
+    await Future.delayed(const Duration(milliseconds: 300));
+
     if (_speechEnabled) {
       setState(() {
         _isListening = true;
+        _lastWords = ''; // Clear last words
+        _messageController.clear(); // Clear any text in the field
       });
 
       try {
@@ -117,7 +160,33 @@ class _AIAssistantScreenState extends State<AIAssistantScreen> {
           pauseFor: const Duration(seconds: 3), // Stop after this much silence
           partialResults: true,
           localeId: 'en_US',
+          onSoundLevelChange: (level) {
+            // Track sound level to detect when user has stopped speaking
+            if (level > 0) {
+              _lastSoundDetectedTime = DateTime.now();
+            }
+          },
         );
+
+        // Start a timer to check if user has stopped speaking
+        _speechTimeoutTimer = Timer.periodic(Duration(milliseconds: 500), (
+          timer,
+        ) {
+          if (_lastWords.isNotEmpty &&
+              DateTime.now().difference(_lastSoundDetectedTime).inSeconds >=
+                  2) {
+            // If we have text and no sound for 2 seconds, auto-submit
+            timer.cancel();
+            _stopListening();
+            if (_lastWords.isNotEmpty) {
+              _handleSubmitted(_lastWords);
+              setState(() {
+                _lastWords = '';
+                _messageController.clear(); // Clear the text field
+              });
+            }
+          }
+        });
 
         ScaffoldMessenger.of(
           context,
@@ -127,6 +196,7 @@ class _AIAssistantScreenState extends State<AIAssistantScreen> {
         setState(() {
           _isListening = false;
         });
+        _resetSpeechRecognition(); // Try to reset if there was an error
       }
     } else {
       print('Speech recognition not available');
@@ -142,12 +212,15 @@ class _AIAssistantScreenState extends State<AIAssistantScreen> {
 
   // Stop listening
   void _stopListening() async {
+    _speechTimeoutTimer?.cancel();
+
     if (!_speech.isListening) return;
 
     try {
       await _speech.stop();
     } catch (e) {
       print('Error stopping speech recognition: $e');
+      _resetSpeechRecognition();
     }
 
     setState(() {
@@ -158,8 +231,9 @@ class _AIAssistantScreenState extends State<AIAssistantScreen> {
   Future<void> _initializeAI() async {
     await _aiService.initialize();
 
-    // Add welcome message
-    _addAssistantMessage(await _aiService.sendMessage('Hello'));
+    // Add welcome message with tap functionality
+    final welcomeMessage = await _aiService.sendMessage('Hello');
+    _addAssistantMessage(welcomeMessage);
   }
 
   Future<void> _initializeTts() async {
@@ -188,37 +262,54 @@ class _AIAssistantScreenState extends State<AIAssistantScreen> {
   }
 
   Future<void> _readText(String text) async {
-    // Don't read text if we're listening to speech
-    if (text.isEmpty || _isListening) return;
+    // Don't read text if it's empty
+    if (text.isEmpty) return;
+
+    // First stop any ongoing speech
+    await _stopReading();
 
     setState(() {
       _isReadingResponse = true;
     });
 
+    // Create a completer to track when speech is done
+    Completer<void> completer = Completer<void>();
+
+    // Set up completion handler
+    _flutterTts.setCompletionHandler(() {
+      if (!completer.isCompleted) {
+        completer.complete();
+        if (mounted) {
+          setState(() {
+            _isReadingResponse = false;
+          });
+        }
+      }
+    });
+
     try {
+      print('Starting to speak: ${text.substring(0, min(50, text.length))}...');
+
+      // Speak the text
       await _flutterTts.speak(text);
-
-      // For text of average length, estimate speech duration
-      final wordCount =
-          text.split(RegExp(r'\s+')).where((w) => w.isNotEmpty).length;
-      final estimatedDuration = Duration(
-        milliseconds: wordCount * 300,
-      ); // ~300ms per word
-
-      await Future.delayed(estimatedDuration);
     } catch (e) {
+      print('Error reading text: $e');
       if (mounted) {
         ScaffoldMessenger.of(
           context,
         ).showSnackBar(SnackBar(content: Text('Error reading text: $e')));
-      }
-    } finally {
-      if (mounted) {
+
         setState(() {
           _isReadingResponse = false;
         });
       }
+      if (!completer.isCompleted) {
+        completer.completeError(e);
+      }
     }
+
+    // Return the future that completes when speech is done
+    return completer.future;
   }
 
   void _handleSubmitted(String text) async {
@@ -228,6 +319,11 @@ class _AIAssistantScreenState extends State<AIAssistantScreen> {
 
     // Add user message
     _addUserMessage(text);
+
+    // Clear the last words
+    setState(() {
+      _lastWords = '';
+    });
 
     // Simulate typing
     setState(() {
@@ -248,6 +344,9 @@ class _AIAssistantScreenState extends State<AIAssistantScreen> {
     });
 
     await _scrollToBottom();
+
+    // Reset the speech service to ensure it's in a clean state for the next interaction
+    _resetSpeechRecognition();
   }
 
   void _addUserMessage(String message) {
@@ -258,11 +357,33 @@ class _AIAssistantScreenState extends State<AIAssistantScreen> {
 
   void _addAssistantMessage(String message) {
     setState(() {
-      _messages.add(ChatMessage(text: message, isUser: false));
+      _messages.add(
+        ChatMessage(
+          text: message,
+          isUser: false,
+          onTap: () => _toggleReadingMessage(message),
+        ),
+      );
     });
 
-    // Auto-read assistant responses only if not currently listening
-    if (!_isListening) {
+    // Always read the assistant's response
+    _readText(message).then((_) {
+      // Reset UI state after speaking is done
+      if (mounted) {
+        setState(() {
+          _isReadingResponse = false;
+          _isListening = false; // Ensure listening state is reset
+          _lastWords = ''; // Clear any previous recognized words
+        });
+      }
+    });
+  }
+
+  // Toggle reading a specific message
+  void _toggleReadingMessage(String message) {
+    if (_isReadingResponse) {
+      _stopReading();
+    } else {
       _readText(message);
     }
   }
@@ -302,8 +423,17 @@ class _AIAssistantScreenState extends State<AIAssistantScreen> {
     return GestureDetector(
       // Add tap-to-listen functionality on the entire screen
       onTap: () {
-        // Skip if we're already listening or we're in the middle of text input
-        if (_isListening || _messageController.text.isNotEmpty) return;
+        // If we're currently reading text, stop reading
+        if (_isReadingResponse) {
+          _stopReading();
+          return;
+        }
+
+        // If we're already listening or typing, don't do anything
+        if (_isListening || _isTyping || _messageController.text.isNotEmpty)
+          return;
+
+        // Otherwise, start listening
         _startListening();
       },
       child: Scaffold(
@@ -333,43 +463,80 @@ class _AIAssistantScreenState extends State<AIAssistantScreen> {
         ),
         body: Column(
           children: [
-            // Microphone status indicator
-            if (_isListening)
-              Container(
-                padding: const EdgeInsets.symmetric(
-                  vertical: 8,
-                  horizontal: 16,
-                ),
-                color: Colors.purple.shade50,
-                child: Row(
-                  children: [
-                    const Icon(Icons.mic, color: Colors.red),
-                    const SizedBox(width: 8),
-                    Expanded(
-                      child: Text(
-                        _lastWords.isEmpty
-                            ? 'Listening...'
-                            : 'Heard: $_lastWords',
-                        style: TextStyle(
-                          color: Colors.purple.shade800,
-                          fontStyle: FontStyle.italic,
-                        ),
-                      ),
-                    ),
-                    IconButton(
-                      icon: const Icon(Icons.cancel, color: Colors.red),
-                      onPressed: _stopListening,
-                      iconSize: 20,
-                    ),
-                  ],
-                ),
-              ),
+            // Status indicator bar at the top
+            Container(
+              padding: const EdgeInsets.symmetric(vertical: 8, horizontal: 16),
+              color:
+                  _isListening
+                      ? Colors.purple.shade50
+                      : _isReadingResponse
+                      ? Colors.blue.shade50
+                      : Colors.transparent,
+              child:
+                  _isListening
+                      ? Row(
+                        children: [
+                          const Icon(Icons.mic, color: Colors.red),
+                          const SizedBox(width: 8),
+                          Expanded(
+                            child: Text(
+                              _lastWords.isEmpty
+                                  ? 'Listening...'
+                                  : 'Heard: $_lastWords',
+                              style: TextStyle(
+                                color: Colors.purple.shade800,
+                                fontStyle: FontStyle.italic,
+                              ),
+                            ),
+                          ),
+                          IconButton(
+                            icon: const Icon(Icons.cancel, color: Colors.red),
+                            onPressed: _stopListening,
+                            iconSize: 20,
+                          ),
+                        ],
+                      )
+                      : _isReadingResponse
+                      ? Row(
+                        children: [
+                          const Icon(Icons.volume_up, color: Colors.blue),
+                          const SizedBox(width: 8),
+                          const Expanded(
+                            child: Text(
+                              'Speaking response...',
+                              style: TextStyle(
+                                color: Colors.blue,
+                                fontStyle: FontStyle.italic,
+                              ),
+                            ),
+                          ),
+                          IconButton(
+                            icon: const Icon(Icons.cancel, color: Colors.blue),
+                            onPressed: _stopReading,
+                            iconSize: 20,
+                          ),
+                        ],
+                      )
+                      : const SizedBox.shrink(),
+            ),
             Expanded(
               child: ListView.builder(
                 controller: _scrollController,
                 padding: const EdgeInsets.all(8.0),
                 itemCount: _messages.length,
-                itemBuilder: (_, int index) => _messages[index],
+                itemBuilder: (_, int index) {
+                  final message = _messages[index];
+                  // If it's not a user message and doesn't already have an onTap,
+                  // create a new instance with the onTap handler
+                  if (!message.isUser && message.onTap == null) {
+                    return ChatMessage(
+                      text: message.text,
+                      isUser: message.isUser,
+                      onTap: () => _toggleReadingMessage(message.text),
+                    );
+                  }
+                  return message;
+                },
               ),
             ),
             if (_isTyping)
@@ -392,6 +559,41 @@ class _AIAssistantScreenState extends State<AIAssistantScreen> {
                       child: LinearProgressIndicator(
                         backgroundColor: Colors.purple,
                         color: Colors.white,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            // Add a helper text when there's no activity happening
+            if (!_isListening && !_isTyping && !_isReadingResponse)
+              Container(
+                padding: const EdgeInsets.all(12.0),
+                margin: const EdgeInsets.symmetric(
+                  horizontal: 16.0,
+                  vertical: 8.0,
+                ),
+                decoration: BoxDecoration(
+                  color: Colors.purple.shade50,
+                  borderRadius: BorderRadius.circular(8.0),
+                  border: Border.all(color: Colors.purple.shade200, width: 1),
+                ),
+                width: double.infinity,
+                child: Row(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: [
+                    Icon(
+                      Icons.touch_app,
+                      size: 18,
+                      color: Colors.purple.shade700,
+                    ),
+                    const SizedBox(width: 8),
+                    Text(
+                      'Tap anywhere to start listening',
+                      textAlign: TextAlign.center,
+                      style: TextStyle(
+                        fontSize: 14,
+                        fontWeight: FontWeight.w500,
+                        color: Colors.purple.shade700,
                       ),
                     ),
                   ],
@@ -462,10 +664,16 @@ class _AIAssistantScreenState extends State<AIAssistantScreen> {
 }
 
 class ChatMessage extends StatelessWidget {
-  const ChatMessage({super.key, required this.text, required this.isUser});
+  const ChatMessage({
+    super.key,
+    required this.text,
+    required this.isUser,
+    this.onTap,
+  });
 
   final String text;
   final bool isUser;
+  final VoidCallback? onTap;
 
   @override
   Widget build(BuildContext context) {
@@ -497,24 +705,30 @@ class ChatMessage extends StatelessWidget {
             child: Column(
               crossAxisAlignment: messageAlignment,
               children: [
-                Container(
-                  padding: const EdgeInsets.symmetric(
-                    horizontal: 16.0,
-                    vertical: 12.0,
+                GestureDetector(
+                  onTap:
+                      !isUser
+                          ? onTap
+                          : null, // Only add tap functionality for AI messages
+                  child: Container(
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 16.0,
+                      vertical: 12.0,
+                    ),
+                    decoration: BoxDecoration(
+                      color: messageColor,
+                      borderRadius: BorderRadius.circular(20.0),
+                      boxShadow: [
+                        BoxShadow(
+                          blurRadius: 2,
+                          spreadRadius: 0,
+                          offset: const Offset(0, 1),
+                          color: Colors.black.withOpacity(0.1),
+                        ),
+                      ],
+                    ),
+                    child: Text(text, style: TextStyle(color: textColor)),
                   ),
-                  decoration: BoxDecoration(
-                    color: messageColor,
-                    borderRadius: BorderRadius.circular(20.0),
-                    boxShadow: [
-                      BoxShadow(
-                        blurRadius: 2,
-                        spreadRadius: 0,
-                        offset: const Offset(0, 1),
-                        color: Colors.black.withOpacity(0.1),
-                      ),
-                    ],
-                  ),
-                  child: Text(text, style: TextStyle(color: textColor)),
                 ),
                 Padding(
                   padding: const EdgeInsets.only(

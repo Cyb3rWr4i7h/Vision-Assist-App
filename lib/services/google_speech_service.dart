@@ -285,4 +285,31 @@ class GoogleSpeechService {
     await cancelListening();
     await _audioRecorder.dispose();
   }
+
+  // Reset the service state for reuse
+  Future<bool> reset() async {
+    try {
+      // First, ensure we're not listening
+      if (_isListening) {
+        await cancelListening();
+      }
+
+      // Release and recreate resources
+      await _audioRecorder.dispose();
+
+      // Reset the state variables
+      _isListening = false;
+      _lastRecognizedText = '';
+      _audioFilePath = '';
+
+      // Reinitialize the recorder
+      await Future.delayed(const Duration(milliseconds: 500));
+
+      // Re-initialize the service
+      return await initialize();
+    } catch (e) {
+      debugPrint('Error resetting speech service: $e');
+      return false;
+    }
+  }
 }

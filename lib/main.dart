@@ -6,11 +6,17 @@ import 'package:vision_assist/screens/color_detection_screen.dart';
 import 'package:vision_assist/screens/text_recognition_screen.dart';
 import 'package:vision_assist/screens/ai_assistant_screen.dart';
 import 'package:vision_assist/screens/navigation_screen.dart';
+import 'package:vision_assist/screens/profile_screen.dart';
+import 'package:vision_assist/services/cloud_vision_service.dart';
 import 'package:googleapis_auth/auth_io.dart';
 import 'package:http/http.dart' as http;
 import 'package:flutter_tts/flutter_tts.dart';
 import 'package:speech_to_text/speech_to_text.dart';
 import 'package:permission_handler/permission_handler.dart';
+import 'package:vision_assist/services/profile_service.dart';
+import 'package:vision_assist/models/user_profile.dart';
+import 'package:url_launcher/url_launcher.dart';
+import 'dart:async';
 
 void main() async {
   // Ensure Flutter is initialized
@@ -47,6 +53,9 @@ void main() async {
             client,
           );
           debugPrint('✅ Successfully validated service account credentials');
+
+          // Initialize the Cloud Vision service
+          await _initializeCloudVision();
         } finally {
           client.close();
         }
@@ -59,6 +68,17 @@ void main() async {
   }
 
   runApp(const MyApp());
+}
+
+// Initialize Google Cloud Vision API service
+Future<void> _initializeCloudVision() async {
+  try {
+    final cloudVisionService = CloudVisionService();
+    await cloudVisionService.initialize();
+    debugPrint('✅ Successfully initialized Cloud Vision API service');
+  } catch (e) {
+    debugPrint('⚠️ Error initializing Cloud Vision API service: $e');
+  }
 }
 
 // Helper function to verify if credentials contain required fields
@@ -124,10 +144,14 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
     WidgetsBinding.instance.addObserver(this);
     _initializeTts();
     _initializeSpeech();
-    // Start speaking instructions after a short delay
+
+    // Start speaking the complete welcome instructions after a short delay
     Future.delayed(const Duration(milliseconds: 500), () {
       _speakInstructions();
     });
+
+    // Remove the double tap listener announcement so it doesn't interrupt the welcome speech
+    // The double tap information is already included in the welcome message
   }
 
   @override
@@ -220,15 +244,17 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
       await _stopSpeaking();
     }
 
-    const instructions = '''
-Welcome to Vision Assist. This app has 5 main functions:
+    const instructions =
+        '''Welcome to Vision Assist. To use this app, please say the COMPLETE commands exactly as follows:        
 - Say "Open Object Detection" to detect objects around you
 - Say "Open Text Recognition" to read text
 - Say "Open Color Detection" to identify colors
 - Say "Open AI Assistant" to chat with our AI
 - Say "Open Navigation" for assistance with navigation
+- Say "Open Profile" to manage your personal information
+- Say "Call Emergency" to call your emergency contact
 Tap anywhere on the screen to activate voice recognition.
-    ''';
+Double tap anywhere for quick access to object detection.''';
 
     setState(() {
       _instructionsText = instructions;
@@ -318,35 +344,321 @@ Tap anywhere on the screen to activate voice recognition.
   void _processCommand(String command) {
     if (command.isEmpty) return;
 
-    final lowerCommand = command.toLowerCase();
+    final lowerCommand = command.toLowerCase().trim();
     print('Processing command: $lowerCommand');
 
-    if (lowerCommand.contains('object') || lowerCommand.contains('detection')) {
+    // Use exact phrase matching instead of flexible matching
+    if (lowerCommand == "open object detection") {
+      _flutterTts.speak('Opening object detection');
       _navigateTo(const ObjectDetectionScreen());
-    } else if (lowerCommand.contains('text') ||
-        lowerCommand.contains('recognition')) {
+    } else if (lowerCommand == "open text recognition") {
+      _flutterTts.speak('Opening text recognition');
       _navigateTo(const TextRecognitionScreen());
-    } else if (lowerCommand.contains('color')) {
+    } else if (lowerCommand == "open color detection" ||
+        lowerCommand == "open colour detection") {
+      // Support both spellings
+      _flutterTts.speak('Opening color detection');
       _navigateTo(const ColorDetectionScreen());
-    } else if (lowerCommand.contains('ai') ||
-        lowerCommand.contains('assistant')) {
+    } else if (lowerCommand == "open ai assistant") {
+      _flutterTts.speak('Opening AI assistant');
       _navigateTo(const AIAssistantScreen());
-    } else if (lowerCommand.contains('nav') ||
-        lowerCommand.contains('navigation')) {
+    } else if (lowerCommand == "open navigation" ||
+        lowerCommand == "open navigation assistant") {
+      _flutterTts.speak('Opening navigation assistant');
       _navigateTo(const NavigationScreen());
-    } else if (lowerCommand.contains('help') ||
-        lowerCommand.contains('instructions')) {
+    } else if (lowerCommand == "open profile") {
+      _flutterTts.speak('Opening profile');
+      _navigateTo(const ProfileScreen());
+    } else if (lowerCommand == "help" || lowerCommand == "instructions") {
       _speakInstructions();
+    } else if (lowerCommand == "call emergency" ||
+        lowerCommand == "emergency call" ||
+        lowerCommand == "call emergency contact") {
+      _flutterTts.speak('Calling emergency contact');
+      _callEmergencyContact();
     } else {
+      // If no exact match, try to find the closest matching command
+      // This allows for slight variations but still requires most of the exact phrase
+      if (_findBestMatchForExactCommands(lowerCommand)) {
+        return; // Successfully found and executed a command match
+      }
+
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
-          content: Text('Command not recognized. Please try again.'),
+          content: Text(
+            'Command not recognized. Please try again with a complete command.',
+          ),
         ),
       );
 
       // Speak the error message
-      _flutterTts.speak('Command not recognized. Please try again.');
+      _flutterTts.speak(
+        'Command not recognized. Please use complete commands like "Open Object Detection".',
+      );
     }
+  }
+
+  // Find the best matching command when exact match fails
+  // This function requires more specific commands than before
+  bool _findBestMatchForExactCommands(String command) {
+    // Define the exact phrases we're looking for
+    final Map<String, List<String>> validCommandVariations = {
+      'object': [
+        'open object detection',
+        'start object detection',
+        'launch object detection',
+        'begin object detection',
+      ],
+      'text': [
+        'open text recognition',
+        'start text recognition',
+        'launch text recognition',
+        'begin text recognition',
+      ],
+      'color': [
+        'open color detection',
+        'open colour detection',
+        'start color detection',
+        'launch color detection',
+        'begin color detection',
+      ],
+      'ai': [
+        'open ai assistant',
+        'start ai assistant',
+        'launch ai assistant',
+        'begin ai assistant',
+      ],
+      'navigation': [
+        'open navigation',
+        'open navigation assistant',
+        'start navigation',
+        'launch navigation',
+        'begin navigation',
+      ],
+      'profile': [
+        'open profile',
+        'open my profile',
+        'start profile',
+        'launch profile',
+        'begin profile',
+        'view profile',
+        'show profile',
+      ],
+      'emergency': [
+        'call emergency',
+        'call emergency contact',
+        'emergency call',
+        'make emergency call',
+        'dial emergency',
+        'contact emergency',
+      ],
+    };
+
+    // Try to find a close match using string similarity
+    int highestWordsMatched = 0;
+    String bestCommand = '';
+    String bestCategory = '';
+
+    // For each category of commands
+    for (final category in validCommandVariations.keys) {
+      // For each valid variation of this category
+      for (final validCommand in validCommandVariations[category]!) {
+        // Calculate how many words match between the user command and this valid command
+        final commandWords = command.split(' ');
+        final validWords = validCommand.split(' ');
+
+        int wordMatches = 0;
+        bool hasOpenWord = false;
+
+        // Count matching words
+        for (final word in commandWords) {
+          if (validWords.contains(word)) {
+            wordMatches++;
+
+            // Check specifically for 'open', 'start', etc. at the beginning
+            if (word == 'open' ||
+                word == 'start' ||
+                word == 'launch' ||
+                word == 'begin') {
+              hasOpenWord = true;
+            }
+          }
+        }
+
+        // We require the action word (open/start/etc) and at least 2 total matching words
+        // Also require at least 60% of the user's words to match a valid command
+        final percentMatch = wordMatches / commandWords.length;
+        if (hasOpenWord &&
+            wordMatches >= 2 &&
+            percentMatch >= 0.6 &&
+            wordMatches > highestWordsMatched) {
+          highestWordsMatched = wordMatches;
+          bestCommand = validCommand;
+          bestCategory = category;
+        }
+      }
+    }
+
+    // If we found a good match, execute the command
+    if (bestCommand.isNotEmpty) {
+      print('Found close match: $bestCommand (category: $bestCategory)');
+
+      switch (bestCategory) {
+        case 'object':
+          _flutterTts.speak('Opening object detection');
+          _navigateTo(const ObjectDetectionScreen());
+          return true;
+        case 'text':
+          _flutterTts.speak('Opening text recognition');
+          _navigateTo(const TextRecognitionScreen());
+          return true;
+        case 'color':
+          _flutterTts.speak('Opening color detection');
+          _navigateTo(const ColorDetectionScreen());
+          return true;
+        case 'ai':
+          _flutterTts.speak('Opening AI assistant');
+          _navigateTo(const AIAssistantScreen());
+          return true;
+        case 'navigation':
+          _flutterTts.speak('Opening navigation assistant');
+          _navigateTo(const NavigationScreen());
+          return true;
+        case 'profile':
+          _flutterTts.speak('Opening profile');
+          _navigateTo(const ProfileScreen());
+          return true;
+        case 'emergency':
+          _flutterTts.speak('Calling emergency contact');
+          _callEmergencyContact();
+          return true;
+      }
+    }
+
+    return false;
+  }
+
+  // Make an emergency call
+  Future<void> _callEmergencyContact() async {
+    try {
+      // Load user profile to get emergency contact
+      final profileService = ProfileService();
+      final userProfile = await profileService.loadProfile();
+
+      final phoneNumber = userProfile.emergencyContact.trim();
+
+      if (phoneNumber.isEmpty) {
+        _flutterTts.speak(
+          'No emergency contact number found. Please set up your profile first.',
+        );
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text(
+              'No emergency contact number found. Please set up your profile first.',
+            ),
+          ),
+        );
+        return;
+      }
+
+      // Check and request the CALL_PHONE permission
+      final status = await Permission.phone.request();
+      if (!status.isGranted) {
+        _flutterTts.speak('Permission to make phone calls is required.');
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Permission to make phone calls is required'),
+          ),
+        );
+        return;
+      }
+
+      // Make the call using the tel: scheme
+      final String telScheme = 'tel:$phoneNumber';
+      _flutterTts.speak('Calling emergency contact now');
+
+      // Launch directly without checking canLaunchUrl first
+      await launchUrl(
+        Uri.parse(telScheme),
+        mode: LaunchMode.externalApplication,
+      );
+    } catch (e) {
+      _flutterTts.speak('Error making emergency call. Please try again.');
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('Error: $e')));
+    }
+  }
+
+  // This function is kept for reference and fallback functionality
+  bool _findBestMatch(String command) {
+    // Define weights for different features - higher means more important
+    const objectTerms = ['object', 'detect', 'detection', 'identify'];
+    const textTerms = ['text', 'read', 'ocr', 'recognize', 'recognition'];
+    const colorTerms = ['color', 'colour', 'colors', 'colours'];
+    const aiTerms = ['ai', 'assistant', 'chat', 'talk'];
+    const navTerms = ['navigation', 'navigate', 'direction', 'map', 'go to'];
+    const emergencyTerms = ['emergency', 'call', 'contact', 'help', 'sos'];
+
+    // Count matches for each feature
+    int objectScore = _countMatches(command, objectTerms);
+    int textScore = _countMatches(command, textTerms);
+    int colorScore = _countMatches(command, colorTerms);
+    int aiScore = _countMatches(command, aiTerms);
+    int navScore = _countMatches(command, navTerms);
+    int emergencyScore = _countMatches(command, emergencyTerms);
+
+    // Find the highest score
+    int maxScore = [
+      objectScore,
+      textScore,
+      colorScore,
+      aiScore,
+      navScore,
+      emergencyScore,
+    ].reduce((a, b) => a > b ? a : b);
+
+    // Only match if we have at least one match
+    if (maxScore > 0) {
+      if (objectScore == maxScore) {
+        _flutterTts.speak('Opening object detection');
+        _navigateTo(const ObjectDetectionScreen());
+        return true;
+      } else if (textScore == maxScore) {
+        _flutterTts.speak('Opening text recognition');
+        _navigateTo(const TextRecognitionScreen());
+        return true;
+      } else if (colorScore == maxScore) {
+        _flutterTts.speak('Opening color detection');
+        _navigateTo(const ColorDetectionScreen());
+        return true;
+      } else if (aiScore == maxScore) {
+        _flutterTts.speak('Opening AI assistant');
+        _navigateTo(const AIAssistantScreen());
+        return true;
+      } else if (navScore == maxScore) {
+        _flutterTts.speak('Opening navigation assistant');
+        _navigateTo(const NavigationScreen());
+        return true;
+      } else if (emergencyScore == maxScore) {
+        _flutterTts.speak('Calling emergency contact');
+        _callEmergencyContact();
+        return true;
+      }
+    }
+
+    return false;
+  }
+
+  // Count how many terms from the list appear in the command
+  int _countMatches(String command, List<String> terms) {
+    int count = 0;
+    for (String term in terms) {
+      if (command.contains(term)) {
+        count++;
+      }
+    }
+    return count;
   }
 
   // Navigate to a specific screen
@@ -370,178 +682,230 @@ Tap anywhere on the screen to activate voice recognition.
         ],
       ),
       body: GestureDetector(
-        onTap: () {
-          if (_isSpeaking) {
-            _stopSpeaking();
-          } else if (!_isListening) {
-            _startListening();
-          }
+        onTap: _startListening,
+        onDoubleTap: () {
+          // Navigate directly to object detection on double tap
+          _flutterTts.speak('Opening object detection');
+          _navigateTo(const ObjectDetectionScreen());
         },
         behavior:
             HitTestBehavior.opaque, // Makes sure taps are detected everywhere
-        child: Padding(
-          padding: const EdgeInsets.all(24.0),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.stretch,
-            children: [
-              const SizedBox(height: 30),
-              const Text(
-                'Vision Assist',
-                style: TextStyle(fontSize: 32, fontWeight: FontWeight.bold),
-                textAlign: TextAlign.center,
-              ),
-              const SizedBox(height: 20),
-
-              // Listening status text - make it tappable too
-              GestureDetector(
-                onTap: () {
-                  if (_isSpeaking) {
-                    _stopSpeaking();
-                  } else if (!_isListening) {
-                    _startListening();
-                  }
-                },
-                child: Container(
-                  padding: const EdgeInsets.symmetric(
-                    vertical: 12,
-                    horizontal: 16,
-                  ),
-                  decoration: BoxDecoration(
-                    color:
-                        _isListening
-                            ? Colors.deepPurple.withOpacity(0.1)
-                            : Colors.transparent,
-                    borderRadius: BorderRadius.circular(8),
-                  ),
-                  child: Text(
-                    _isListening
-                        ? 'Listening: $_recognizedText'
-                        : 'Tap anywhere to activate voice commands',
-                    style: TextStyle(
-                      fontSize: 18,
-                      color: _isListening ? Colors.deepPurple : Colors.black54,
-                      fontWeight:
-                          _isListening ? FontWeight.bold : FontWeight.normal,
-                    ),
+        child: Stack(
+          children: [
+            Padding(
+              padding: const EdgeInsets.all(24.0),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  const SizedBox(height: 20),
+                  const Text(
+                    'Vision Assist',
+                    style: TextStyle(fontSize: 32, fontWeight: FontWeight.bold),
                     textAlign: TextAlign.center,
                   ),
-                ),
-              ),
+                  const SizedBox(height: 20),
 
-              const SizedBox(height: 40),
-
-              // Voice activation indicator - make it tappable as a button
-              GestureDetector(
-                onTap: () {
-                  if (_isSpeaking) {
-                    _stopSpeaking();
-                  } else if (!_isListening) {
-                    _startListening();
-                  } else {
-                    _stopListening();
-                  }
-                },
-                child: Center(
-                  child: AnimatedContainer(
-                    duration: const Duration(milliseconds: 300),
-                    width: _isListening ? 150 : 100,
-                    height: _isListening ? 150 : 100,
-                    decoration: BoxDecoration(
-                      color:
-                          _isListening
-                              ? Colors.deepPurple.withOpacity(0.2)
-                              : Colors.grey.withOpacity(0.1),
-                      shape: BoxShape.circle,
-                      boxShadow:
-                          _isListening
-                              ? [
-                                BoxShadow(
-                                  color: Colors.deepPurple.withOpacity(0.3),
-                                  blurRadius: 20,
-                                  spreadRadius: 5,
-                                ),
-                              ]
-                              : null,
-                    ),
-                    child: Icon(
-                      _isListening ? Icons.mic : Icons.mic_none,
-                      size: _isListening ? 80 : 50,
-                      color: _isListening ? Colors.deepPurple : Colors.grey,
-                    ),
-                  ),
-                ),
-              ),
-
-              const SizedBox(height: 40),
-
-              // Display the instructions text - make this tappable too
-              Expanded(
-                child: GestureDetector(
-                  onTap: () {
-                    if (_isSpeaking) {
-                      _stopSpeaking();
-                    } else if (!_isListening) {
-                      _startListening();
-                    }
-                  },
-                  child: Container(
-                    padding: const EdgeInsets.all(16),
-                    decoration: BoxDecoration(
-                      color: Colors.grey.shade100,
-                      borderRadius: BorderRadius.circular(16),
-                      border: Border.all(color: Colors.grey.shade300),
-                    ),
-                    child: SingleChildScrollView(
-                      child: Text(
-                        _instructionsText,
-                        style: const TextStyle(fontSize: 16),
+                  // Listening status text - make it tappable too
+                  GestureDetector(
+                    onTap: _startListening,
+                    onDoubleTap: () {
+                      // Navigate directly to object detection on double tap
+                      _flutterTts.speak('Opening object detection');
+                      _navigateTo(const ObjectDetectionScreen());
+                    },
+                    child: Container(
+                      padding: const EdgeInsets.symmetric(
+                        vertical: 12,
+                        horizontal: 16,
                       ),
-                    ),
-                  ),
-                ),
-              ),
-
-              // Status indicator
-              Container(
-                padding: const EdgeInsets.symmetric(vertical: 16),
-                child: Row(
-                  mainAxisAlignment: MainAxisAlignment.center,
-                  children: [
-                    Icon(
-                      _isSpeaking
-                          ? Icons.volume_up
-                          : _isListening
-                          ? Icons.mic
-                          : Icons.volume_off,
-                      color:
-                          _isSpeaking
-                              ? Colors.blue
-                              : _isListening
-                              ? Colors.deepPurple
-                              : Colors.grey,
-                    ),
-                    const SizedBox(width: 8),
-                    Text(
-                      _isSpeaking
-                          ? 'Speaking...'
-                          : _isListening
-                          ? 'Listening...'
-                          : 'Ready',
-                      style: TextStyle(
+                      decoration: BoxDecoration(
                         color:
-                            _isSpeaking
-                                ? Colors.blue
-                                : _isListening
-                                ? Colors.deepPurple
-                                : Colors.grey,
+                            _isListening
+                                ? Colors.deepPurple.withOpacity(0.1)
+                                : Colors.transparent,
+                        borderRadius: BorderRadius.circular(8),
+                      ),
+                      child: Text(
+                        _isListening ? 'Listening: $_recognizedText' : '',
+                        style: TextStyle(
+                          fontSize: 18,
+                          color:
+                              _isListening ? Colors.deepPurple : Colors.black54,
+                          fontWeight:
+                              _isListening
+                                  ? FontWeight.bold
+                                  : FontWeight.normal,
+                        ),
+                        textAlign: TextAlign.center,
                       ),
                     ),
-                  ],
-                ),
+                  ),
+
+                  const SizedBox(height: 20),
+
+                  // Voice activation indicator - make it tappable as a button
+                  GestureDetector(
+                    onTap: _startListening,
+                    child: Center(
+                      child: AnimatedContainer(
+                        duration: const Duration(milliseconds: 300),
+                        width: _isListening ? 150 : 100,
+                        height: _isListening ? 150 : 100,
+                        decoration: BoxDecoration(
+                          color:
+                              _isListening
+                                  ? Colors.deepPurple.withOpacity(0.2)
+                                  : Colors.grey.withOpacity(0.1),
+                          shape: BoxShape.circle,
+                          boxShadow:
+                              _isListening
+                                  ? [
+                                    BoxShadow(
+                                      color: Colors.deepPurple.withOpacity(0.3),
+                                      blurRadius: 20,
+                                      spreadRadius: 5,
+                                    ),
+                                  ]
+                                  : null,
+                        ),
+                        child: Icon(
+                          _isListening ? Icons.mic : Icons.mic_none,
+                          size: _isListening ? 80 : 50,
+                          color: _isListening ? Colors.deepPurple : Colors.grey,
+                        ),
+                      ),
+                    ),
+                  ),
+
+                  const SizedBox(height: 20),
+
+                  // Display the complete welcome instructions text
+                  Expanded(
+                    child: GestureDetector(
+                      onTap: _startListening,
+                      onDoubleTap: () {
+                        // Navigate directly to object detection on double tap
+                        _flutterTts.speak('Opening object detection');
+                        _navigateTo(const ObjectDetectionScreen());
+                      },
+                      child: Container(
+                        padding: const EdgeInsets.all(16),
+                        decoration: BoxDecoration(
+                          color: Colors.grey.shade100,
+                          borderRadius: BorderRadius.circular(16),
+                          border: Border.all(color: Colors.grey.shade300),
+                        ),
+                        child: SingleChildScrollView(
+                          child: Text(
+                            '''Welcome to Vision Assist
+    
+To use this app, please say the COMPLETE commands exactly as follows:
+                            
+- Say "Open Object Detection" to detect objects around you
+- Say "Open Text Recognition" to read text
+- Say "Open Color Detection" to identify colors
+- Say "Open AI Assistant" to chat with our AI
+- Say "Open Navigation" for assistance with navigation
+- Say "Open Profile" to manage your personal information
+- Say "Call Emergency" to call your emergency contact
+    
+Tap anywhere on the screen to activate voice recognition.
+Double tap anywhere for quick access to object detection.''',
+                            style: const TextStyle(
+                              fontSize: 16,
+                              height: 1.5,
+                              color: Colors.black87,
+                            ),
+                            textAlign: TextAlign.left,
+                          ),
+                        ),
+                      ),
+                    ),
+                  ),
+
+                  // Status indicator
+                  Container(
+                    padding: const EdgeInsets.symmetric(vertical: 16),
+                    child: Row(
+                      mainAxisAlignment: MainAxisAlignment.center,
+                      children: [
+                        Icon(
+                          _isSpeaking
+                              ? Icons.volume_up
+                              : _isListening
+                              ? Icons.mic
+                              : Icons.volume_off,
+                          color:
+                              _isSpeaking
+                                  ? Colors.blue
+                                  : _isListening
+                                  ? Colors.deepPurple
+                                  : Colors.grey,
+                        ),
+                        const SizedBox(width: 8),
+                        Text(
+                          _isSpeaking
+                              ? 'Speaking...'
+                              : _isListening
+                              ? 'Listening...'
+                              : 'Ready',
+                          style: TextStyle(
+                            color:
+                                _isSpeaking
+                                    ? Colors.blue
+                                    : _isListening
+                                    ? Colors.deepPurple
+                                    : Colors.grey,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ],
               ),
-            ],
+            ),
+          ],
+        ),
+      ),
+      bottomNavigationBar: Container(
+        height: 72,
+        padding: const EdgeInsets.symmetric(vertical: 8, horizontal: 16),
+        child: ElevatedButton.icon(
+          onPressed: _callEmergencyContact,
+          icon: const Icon(Icons.phone, size: 24),
+          label: const Text(
+            'EMERGENCY CALL',
+            style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
+          ),
+          style: ElevatedButton.styleFrom(
+            backgroundColor: Colors.red,
+            foregroundColor: Colors.white,
+            elevation: 4,
+            shadowColor: Colors.redAccent,
+            shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(12),
+            ),
+            padding: const EdgeInsets.symmetric(vertical: 12),
           ),
         ),
+      ),
+    );
+  }
+
+  Widget _buildQuickAccessButton(
+    String label,
+    IconData icon,
+    VoidCallback onPressed,
+  ) {
+    return ElevatedButton.icon(
+      onPressed: onPressed,
+      icon: Icon(icon),
+      label: Text(label),
+      style: ElevatedButton.styleFrom(
+        backgroundColor: Colors.deepPurple,
+        foregroundColor: Colors.white,
+        padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 12),
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
       ),
     );
   }

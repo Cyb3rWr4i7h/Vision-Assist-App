@@ -1,279 +1,306 @@
 import 'dart:io';
 import 'package:flutter/material.dart';
-import 'package:vision_assist/services/object_detector.dart';
+import 'package:vision_assist/services/cloud_vision_service.dart';
+import 'dart:ui' as ui;
 
 class ObjectDetectionView extends StatelessWidget {
   final File? imageFile;
   final List<DetectedObject> detectedObjects;
+  final List<DetectedColor>? detectedColors;
   final VoidCallback onDetectPressed;
-  final VoidCallback? onReset;
+  final VoidCallback onReset;
   final bool isProcessing;
-  final List<String>? detectionHistory;
+  final List<String> detectionHistory;
 
   const ObjectDetectionView({
     Key? key,
     required this.imageFile,
     required this.detectedObjects,
+    this.detectedColors,
     required this.onDetectPressed,
+    required this.onReset,
     required this.isProcessing,
-    this.onReset,
-    this.detectionHistory,
+    required this.detectionHistory,
   }) : super(key: key);
 
   @override
   Widget build(BuildContext context) {
+    if (imageFile == null) {
+      return const Center(child: Text('No image captured'));
+    }
+
+    return Stack(
+      children: [
+        // Image with overlay
+        Positioned.fill(
+          child: Column(children: [Expanded(child: _buildResultView(context))]),
+        ),
+
+        // Bottom action bar
+        Positioned(
+          left: 0,
+          right: 0,
+          bottom: 20,
+          child: _buildBottomBar(context),
+        ),
+
+        // Processing indicator
+        if (isProcessing)
+          Positioned.fill(
+            child: Container(
+              color: Colors.black38,
+              child: const Center(
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    CircularProgressIndicator(color: Colors.white),
+                    SizedBox(height: 16),
+                    Text(
+                      'Processing image...',
+                      style: TextStyle(color: Colors.white, fontSize: 16),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          ),
+      ],
+    );
+  }
+
+  Widget _buildResultView(BuildContext context) {
     return Stack(
       fit: StackFit.expand,
       children: [
-        // Display the captured image
-        if (imageFile != null) Image.file(imageFile!, fit: BoxFit.cover),
+        // The captured image
+        Image.file(imageFile!, fit: BoxFit.contain),
 
-        // Overlay for detected objects
-        if (imageFile != null)
-          CustomPaint(
-            painter: BoundingBoxPainter(
-              detectedObjects: detectedObjects,
-              imageSize: MediaQuery.of(context).size,
-            ),
+        // Object detection overlay (bounding boxes)
+        if (detectedObjects.isNotEmpty)
+          LayoutBuilder(
+            builder: (context, constraints) {
+              return CustomPaint(
+                size: Size(constraints.maxWidth, constraints.maxHeight),
+                painter: BoundingBoxPainter(
+                  detectedObjects: detectedObjects,
+                  widgetSize: Size(constraints.maxWidth, constraints.maxHeight),
+                ),
+              );
+            },
           ),
 
-        // Loading indicator during processing
-        if (isProcessing)
-          Container(
-            color: Colors.black.withOpacity(0.3),
-            child: const Center(
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  CircularProgressIndicator(),
-                  SizedBox(height: 16),
-                  Text(
-                    'Detecting objects...',
-                    style: TextStyle(
-                      color: Colors.white,
-                      fontSize: 16,
-                      fontWeight: FontWeight.bold,
-                    ),
-                  ),
-                ],
-              ),
-            ),
-          ),
-
-        // Object information panel
-        if (detectedObjects.isNotEmpty && !isProcessing)
-          Positioned(
-            top: 20,
-            left: 20,
-            right: 20,
-            child: Container(
-              padding: const EdgeInsets.all(16),
-              decoration: BoxDecoration(
-                color: Colors.black.withOpacity(0.7),
-                borderRadius: BorderRadius.circular(12),
-              ),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  Text(
-                    'Detected ${detectedObjects.length} object${detectedObjects.length > 1 ? 's' : ''}',
-                    style: const TextStyle(
-                      color: Colors.white,
-                      fontSize: 18,
-                      fontWeight: FontWeight.bold,
-                    ),
-                  ),
-                  const SizedBox(height: 8),
-                  ...detectedObjects.take(5).map((object) {
-                    final confidence = (object.confidence * 100)
-                        .toStringAsFixed(0);
-                    return Padding(
-                      padding: const EdgeInsets.only(bottom: 4),
-                      child: Row(
-                        children: [
-                          Container(
-                            width: 12,
-                            height: 12,
-                            color: object.color,
-                            margin: const EdgeInsets.only(right: 8),
-                          ),
-                          Expanded(
-                            child: Text(
-                              '${object.label} (${confidence}%)',
-                              style: const TextStyle(
-                                color: Colors.white,
-                                fontSize: 16,
-                              ),
-                            ),
-                          ),
-                        ],
-                      ),
-                    );
-                  }).toList(),
-
-                  if (detectedObjects.length > 5)
-                    const Text(
-                      '... and more',
-                      style: TextStyle(
-                        color: Colors.white70,
-                        fontSize: 14,
-                        fontStyle: FontStyle.italic,
-                      ),
-                    ),
-                ],
-              ),
-            ),
-          ),
-
-        // Detection history panel
-        if (detectionHistory != null &&
-            detectionHistory!.isNotEmpty &&
-            !isProcessing)
-          Positioned(
-            bottom: 90,
-            left: 20,
-            right: 20,
-            child: Container(
-              padding: const EdgeInsets.all(12),
-              decoration: BoxDecoration(
-                color: Colors.black.withOpacity(0.6),
-                borderRadius: BorderRadius.circular(10),
-              ),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  const Text(
-                    'Recent Detections:',
-                    style: TextStyle(
-                      color: Colors.white,
-                      fontSize: 16,
-                      fontWeight: FontWeight.bold,
-                    ),
-                  ),
-                  const SizedBox(height: 4),
-                  Wrap(
-                    spacing: 8,
-                    children:
-                        detectionHistory!.take(5).map((label) {
-                          return Chip(
-                            label: Text(label),
-                            backgroundColor: Colors.blue.shade700,
-                            labelStyle: const TextStyle(color: Colors.white),
-                            visualDensity: VisualDensity.compact,
-                          );
-                        }).toList(),
-                  ),
-                ],
-              ),
-            ),
-          ),
-
-        // Action buttons at the bottom
+        // Additional information panel
         Positioned(
-          bottom: 20,
-          left: 0,
-          right: 0,
-          child: Row(
-            mainAxisAlignment: MainAxisAlignment.center,
+          top: 16,
+          left: 16,
+          right: 16,
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              ElevatedButton.icon(
-                onPressed: isProcessing ? null : onDetectPressed,
-                icon: Icon(
-                  isProcessing ? Icons.hourglass_bottom : Icons.search,
-                ),
-                label: Text(isProcessing ? 'Detecting...' : 'Detect Again'),
-                style: ElevatedButton.styleFrom(
-                  backgroundColor: Colors.blue,
-                  foregroundColor: Colors.white,
-                  padding: const EdgeInsets.symmetric(
-                    horizontal: 16,
-                    vertical: 12,
+              // Results card
+              Card(
+                color: Colors.white.withOpacity(0.8),
+                elevation: 4,
+                child: Padding(
+                  padding: const EdgeInsets.all(12.0),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        detectedObjects.isEmpty
+                            ? 'No objects detected'
+                            : 'Detected ${detectedObjects.length} object${detectedObjects.length == 1 ? '' : 's'}',
+                        style: const TextStyle(
+                          fontWeight: FontWeight.bold,
+                          fontSize: 16,
+                        ),
+                      ),
+                      const SizedBox(height: 8),
+                      // Object list
+                      for (var obj in detectedObjects)
+                        Padding(
+                          padding: const EdgeInsets.only(bottom: 4),
+                          child: Row(
+                            children: [
+                              const Icon(
+                                Icons.check_circle,
+                                color: Colors.green,
+                                size: 16,
+                              ),
+                              const SizedBox(width: 4),
+                              Expanded(
+                                child: Text(
+                                  '${obj.label} (${(obj.confidence * 100).toInt()}%)',
+                                  style: const TextStyle(fontSize: 14),
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+
+                      // Color information
+                      if (detectedColors != null &&
+                          detectedColors!.isNotEmpty) ...[
+                        const Divider(),
+                        const Text(
+                          'Detected Colors:',
+                          style: TextStyle(
+                            fontWeight: FontWeight.bold,
+                            fontSize: 14,
+                          ),
+                        ),
+                        const SizedBox(height: 8),
+                        Wrap(
+                          spacing: 8,
+                          runSpacing: 8,
+                          children:
+                              detectedColors!.map((color) {
+                                return Container(
+                                  padding: const EdgeInsets.symmetric(
+                                    horizontal: 8,
+                                    vertical: 4,
+                                  ),
+                                  decoration: BoxDecoration(
+                                    color: color.color,
+                                    borderRadius: BorderRadius.circular(16),
+                                    border: Border.all(
+                                      color: Colors.black12,
+                                      width: 1,
+                                    ),
+                                  ),
+                                  child: Text(
+                                    '${color.name} (${color.score.toStringAsFixed(2)})',
+                                    style: TextStyle(
+                                      color: _contrastColor(color.color),
+                                      fontWeight: FontWeight.bold,
+                                      fontSize: 12,
+                                    ),
+                                  ),
+                                );
+                              }).toList(),
+                        ),
+                      ],
+
+                      // History
+                      if (detectionHistory.isNotEmpty) ...[
+                        const Divider(),
+                        const Text(
+                          'Recent detections:',
+                          style: TextStyle(
+                            fontWeight: FontWeight.bold,
+                            fontSize: 14,
+                          ),
+                        ),
+                        const SizedBox(height: 4),
+                        Text(
+                          detectionHistory.take(5).join(', '),
+                          style: const TextStyle(
+                            fontSize: 12,
+                            fontStyle: FontStyle.italic,
+                          ),
+                        ),
+                      ],
+                    ],
                   ),
                 ),
               ),
-              const SizedBox(width: 16),
-              if (onReset != null)
-                ElevatedButton.icon(
-                  onPressed: isProcessing ? null : onReset,
-                  icon: const Icon(Icons.photo_camera),
-                  label: const Text('Back to Camera'),
-                  style: ElevatedButton.styleFrom(
-                    backgroundColor: Colors.grey.shade800,
-                    foregroundColor: Colors.white,
-                    padding: const EdgeInsets.symmetric(
-                      horizontal: 16,
-                      vertical: 12,
-                    ),
-                  ),
-                ),
             ],
           ),
         ),
       ],
     );
   }
+
+  Widget _buildBottomBar(BuildContext context) {
+    return Row(
+      mainAxisAlignment: MainAxisAlignment.center,
+      children: [
+        ElevatedButton.icon(
+          onPressed: onReset,
+          icon: const Icon(Icons.camera_alt),
+          label: const Text('Back to Camera'),
+          style: ElevatedButton.styleFrom(
+            backgroundColor: Colors.blue,
+            foregroundColor: Colors.white,
+            padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 12),
+          ),
+        ),
+      ],
+    );
+  }
+
+  // Helper method to get a contrasting text color
+  Color _contrastColor(Color backgroundColor) {
+    // Calculate the perceptive luminance
+    double luminance =
+        (0.299 * backgroundColor.red +
+            0.587 * backgroundColor.green +
+            0.114 * backgroundColor.blue) /
+        255;
+
+    // Return black for bright colors and white for dark ones
+    return luminance > 0.5 ? Colors.black : Colors.white;
+  }
 }
 
 class BoundingBoxPainter extends CustomPainter {
   final List<DetectedObject> detectedObjects;
-  final Size imageSize;
+  final Size widgetSize;
 
-  BoundingBoxPainter({required this.detectedObjects, required this.imageSize});
+  BoundingBoxPainter({required this.detectedObjects, required this.widgetSize});
 
   @override
   void paint(Canvas canvas, Size size) {
+    final paint =
+        Paint()
+          ..color = Colors.red
+          ..strokeWidth = 3
+          ..style = PaintingStyle.stroke;
+
+    final textPainter = TextPainter(textDirection: ui.TextDirection.ltr);
+
+    // Background fill for the text
+    final backgroundPaint =
+        Paint()
+          ..color = Colors.black.withOpacity(0.7)
+          ..style = PaintingStyle.fill;
+
     for (final object in detectedObjects) {
-      // Scale the bounding box to match the display size
+      // The coordinates are normalized (0-1), so we scale them to canvas size
       final rect = Rect.fromLTWH(
-        object.boundingBox.left * (size.width / imageSize.width),
-        object.boundingBox.top * (size.height / imageSize.height),
-        object.boundingBox.width * (size.width / imageSize.width),
-        object.boundingBox.height * (size.height / imageSize.height),
+        object.boundingBox.left * size.width,
+        object.boundingBox.top * size.height,
+        object.boundingBox.width * size.width,
+        object.boundingBox.height * size.height,
       );
 
-      // Draw the bounding box
-      final boxPaint =
-          Paint()
-            ..color = object.color
-            ..style = PaintingStyle.stroke
-            ..strokeWidth = 3.0;
-      canvas.drawRect(rect, boxPaint);
+      // Draw bounding box
+      canvas.drawRect(rect, paint);
 
-      // Prepare the label text
-      final confidence = (object.confidence * 100).toStringAsFixed(0);
-      final labelText = '${object.label} ${confidence}%';
-
-      // Create a background for the label
-      final textBackgroundPaint =
-          Paint()
-            ..color = object.color
-            ..style = PaintingStyle.fill;
-
-      // Measure text size
-      final textStyle = TextStyle(
-        color: Colors.white,
-        fontSize: 14,
-        fontWeight: FontWeight.bold,
+      // Prepare label text
+      final labelText = '${object.label} ${(object.confidence * 100).toInt()}%';
+      textPainter.text = TextSpan(
+        text: labelText,
+        style: const TextStyle(
+          color: Colors.white,
+          fontSize: 16,
+          fontWeight: FontWeight.bold,
+        ),
       );
-      final textSpan = TextSpan(text: labelText, style: textStyle);
-      final textPainter = TextPainter(
-        text: textSpan,
-        textDirection: TextDirection.ltr,
-      );
+
       textPainter.layout();
 
-      // Draw label background
-      final labelBackgroundRect = Rect.fromLTWH(
+      // Draw text background
+      final textBackgroundRect = Rect.fromLTWH(
         rect.left,
         rect.top - textPainter.height - 4,
         textPainter.width + 8,
         textPainter.height + 4,
       );
-      canvas.drawRect(labelBackgroundRect, textBackgroundPaint);
 
-      // Draw the label text
+      canvas.drawRect(textBackgroundRect, backgroundPaint);
+
+      // Draw label text
       textPainter.paint(
         canvas,
         Offset(rect.left + 4, rect.top - textPainter.height - 2),
