@@ -1,9 +1,9 @@
 import 'dart:async';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_tts/flutter_tts.dart';
 import 'package:mobile_scanner/mobile_scanner.dart';
 import 'package:url_launcher/url_launcher.dart';
-import 'package:vibration/vibration.dart';
 import 'package:share_plus/share_plus.dart';
 import 'package:clipboard/clipboard.dart';
 import 'package:permission_handler/permission_handler.dart';
@@ -17,7 +17,7 @@ class QrCodeScannerScreen extends StatefulWidget {
 
 class _QrCodeScannerScreenState extends State<QrCodeScannerScreen> {
   final FlutterTts _flutterTts = FlutterTts();
-  final MobileScannerController _scannerController = MobileScannerController();
+  late MobileScannerController _scannerController;
 
   bool _hasPermission = false;
   bool _isProcessing = false;
@@ -30,6 +30,7 @@ class _QrCodeScannerScreenState extends State<QrCodeScannerScreen> {
   @override
   void initState() {
     super.initState();
+    _initScanner();
     _initializeTts();
     _checkPermission();
 
@@ -39,6 +40,21 @@ class _QrCodeScannerScreenState extends State<QrCodeScannerScreen> {
         _speakFeedback(_scanFeedback);
       }
     });
+  }
+
+  void _initScanner() {
+    _scannerController = MobileScannerController(
+      facing: CameraFacing.back,
+      formats: const [
+        BarcodeFormat.qrCode,
+        BarcodeFormat.ean13,
+        BarcodeFormat.ean8,
+      ],
+      // Ensure camera feed is properly initialized
+      detectionSpeed: DetectionSpeed.normal,
+      detectionTimeoutMs: 1000,
+      returnImage: true,
+    );
   }
 
   Future<void> _initializeTts() async {
@@ -82,10 +98,8 @@ class _QrCodeScannerScreenState extends State<QrCodeScannerScreen> {
       _lastScannedData = data;
     });
 
-    // Provide haptic feedback
-    if (await Vibration.hasVibrator() ?? false) {
-      Vibration.vibrate(duration: 200);
-    }
+    // Provide haptic feedback using Flutter's built-in HapticFeedback
+    HapticFeedback.mediumImpact();
 
     // Speak the QR code content
     String feedbackMessage = 'QR code detected. ';
@@ -100,12 +114,15 @@ class _QrCodeScannerScreenState extends State<QrCodeScannerScreen> {
       feedbackMessage += 'It contains an email address: ${data.substring(7)}';
     } else if (data.startsWith('geo:')) {
       feedbackMessage += 'It contains a location';
+    } else if (data.startsWith('WIFI:')) {
+      feedbackMessage += 'It contains WiFi credentials';
     } else {
       feedbackMessage += 'It contains text: $data';
     }
 
+    // Add clear instructions about the available gestures
     feedbackMessage +=
-        '. Double tap to open, swipe left to copy, swipe right to share, or long press to scan again.';
+        '. Double tap to open. Swipe left to copy to clipboard. Swipe right to share.';
 
     await _speakFeedback(feedbackMessage);
 
@@ -165,12 +182,24 @@ class _QrCodeScannerScreenState extends State<QrCodeScannerScreen> {
   }
 
   void _resetScanner() {
+    // Properly dispose and reinitialize scanner to avoid black screen issues
+    _scannerController.dispose();
+
     setState(() {
       _lastScannedData = '';
       _scanFeedback =
           'Ready to scan a new QR code. Point your camera at a QR code.';
+      _isProcessing = false;
     });
-    _speakFeedback(_scanFeedback);
+
+    // Re-initialize the scanner with a slight delay to ensure proper cleanup
+    Future.delayed(const Duration(milliseconds: 500), () {
+      if (mounted) {
+        _initScanner();
+        setState(() {}); // Trigger rebuild with new controller
+        _speakFeedback(_scanFeedback);
+      }
+    });
   }
 
   @override
@@ -187,62 +216,48 @@ class _QrCodeScannerScreenState extends State<QrCodeScannerScreen> {
       appBar: AppBar(
         title: const Text('QR Code Scanner'),
         backgroundColor: Colors.deepPurple,
+        foregroundColor: Colors.white,
         actions: [
           IconButton(
             icon: Icon(_torchEnabled ? Icons.flash_off : Icons.flash_on),
-            onPressed: () async {
-              await _scannerController.toggleTorch();
+            onPressed: () {
               setState(() {
                 _torchEnabled = !_torchEnabled;
+                _scannerController.toggleTorch();
               });
-              await _speakFeedback(
-                _torchEnabled
-                    ? 'Flashlight turned on'
-                    : 'Flashlight turned off',
-              );
             },
-            tooltip: 'Toggle flashlight',
+            tooltip:
+                _torchEnabled ? 'Turn off flashlight' : 'Turn on flashlight',
           ),
         ],
       ),
       body:
-          !_hasPermission
-              ? _buildPermissionDeniedWidget()
-              : _lastScannedData.isNotEmpty
-              ? _buildResultWidget()
-              : _buildScannerWidget(),
+          _hasPermission
+              ? _lastScannedData.isEmpty
+                  ? _buildScannerWidget()
+                  : _buildResultWidget()
+              : const Center(
+                child: Text(
+                  'Camera permission is required for QR code scanning',
+                ),
+              ),
       floatingActionButton:
-          _lastScannedData.isNotEmpty
+          _lastScannedData.isEmpty
               ? FloatingActionButton(
+                onPressed: () {
+                  // Reset the scanner if it's not working properly
+                  _resetScanner();
+                },
+                backgroundColor: Colors.deepPurple,
+                child: const Icon(Icons.refresh, color: Colors.white),
+                tooltip: 'Reset scanner',
+              )
+              : FloatingActionButton(
                 onPressed: _resetScanner,
                 backgroundColor: Colors.deepPurple,
-                child: const Icon(Icons.refresh),
+                child: const Icon(Icons.qr_code_scanner, color: Colors.white),
                 tooltip: 'Scan another QR code',
-              )
-              : null,
-    );
-  }
-
-  Widget _buildPermissionDeniedWidget() {
-    return Center(
-      child: Column(
-        mainAxisAlignment: MainAxisAlignment.center,
-        children: [
-          const Icon(Icons.camera_alt_rounded, size: 80, color: Colors.grey),
-          const SizedBox(height: 20),
-          const Text(
-            'Camera permission is required',
-            style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
-          ),
-          const SizedBox(height: 12),
-          ElevatedButton(
-            onPressed: () async {
-              await _checkPermission();
-            },
-            child: const Text('Grant Permission'),
-          ),
-        ],
-      ),
+              ),
     );
   }
 
@@ -264,6 +279,20 @@ class _QrCodeScannerScreenState extends State<QrCodeScannerScreen> {
                   _processQrCode(barcodes[0].rawValue!);
                 }
               },
+              // Add overlay to make camera feed more visible
+              overlay: Center(
+                child: Container(
+                  width: 200,
+                  height: 200,
+                  decoration: BoxDecoration(
+                    border: Border.all(
+                      color: Colors.deepPurple.withOpacity(0.7),
+                      width: 4,
+                    ),
+                    borderRadius: BorderRadius.circular(12),
+                  ),
+                ),
+              ),
             ),
           ),
           Container(
@@ -284,7 +313,6 @@ class _QrCodeScannerScreenState extends State<QrCodeScannerScreen> {
   Widget _buildResultWidget() {
     return GestureDetector(
       onDoubleTap: _handleQrCodeAction,
-      onLongPress: _resetScanner,
       onHorizontalDragEnd: (details) {
         if (details.primaryVelocity != null) {
           if (details.primaryVelocity! > 0) {
@@ -351,8 +379,12 @@ class _QrCodeScannerScreenState extends State<QrCodeScannerScreen> {
             ),
             const SizedBox(height: 20),
             Text(
-              _scanFeedback,
-              style: const TextStyle(fontSize: 16, color: Colors.grey),
+              'Double tap to open, swipe left to copy, swipe right to share',
+              style: const TextStyle(
+                fontSize: 16,
+                color: Colors.deepPurple,
+                fontWeight: FontWeight.bold,
+              ),
               textAlign: TextAlign.center,
             ),
           ],
@@ -368,11 +400,18 @@ class _QrCodeScannerScreenState extends State<QrCodeScannerScreen> {
   }) {
     return ElevatedButton.icon(
       onPressed: onPressed,
-      icon: Icon(icon),
-      label: Text(label),
+      icon: Icon(icon, size: 24),
+      label: Text(
+        label,
+        style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
+      ),
       style: ElevatedButton.styleFrom(
-        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+        padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 16),
         backgroundColor: Colors.deepPurple,
+        foregroundColor: Colors.white,
+        elevation: 4,
+        shadowColor: Colors.deepPurple.withOpacity(0.5),
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
       ),
     );
   }

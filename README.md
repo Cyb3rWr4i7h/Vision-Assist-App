@@ -79,6 +79,7 @@ Scans and interprets QR codes and barcodes with accessibility features for visua
 - Uses mobile_scanner for reliable and fast code detection
 - Real-time scanning with continuous feedback
 - Voice guidance throughout the scanning process
+- Flutter's built-in haptic feedback for tactile confirmation
 - Adapts to different lighting conditions
 - Type detection and contextual handling of scanned content
 - Periodic audio cues for proper camera positioning
@@ -165,7 +166,7 @@ lib/
 - **Geolocator ^10.1.0**: Precise location tracking
 - **Share Plus ^7.2.2**: Content sharing capabilities
 - **Mobile Scanner ^3.5.5**: QR code and barcode scanning
-- **Vibration ^1.8.4**: Haptic feedback for scan detection
+- **System Haptic Feedback**: For physical response when QR codes are detected
 
 ## 📋 Prerequisites
 
@@ -249,8 +250,8 @@ lib/
    - Double tap to open links, make calls, or send emails
    - Swipe left to copy content to clipboard
    - Swipe right to share content with other apps
-   - Long press to scan another code
 6. Toggle the flashlight using the button in the top-right corner
+7. Use the refresh button to scan another code
 
 ### Navigation Assistant
 1. Launch the app and select "Navigation Assistant"
