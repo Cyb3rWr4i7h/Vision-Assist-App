@@ -18,9 +18,12 @@ Helps identify objects in the user's surroundings using the device camera. The a
 ![Object Detection Demo](https://via.placeholder.com/400x200?text=Object+Detection+Screenshot)
 
 **Technical Implementation:**
-- Uses Google ML Kit Object Detection for real-time object recognition
+- Uses Google Cloud Vision API for advanced object recognition
+- Detects multiple objects with position information
+- Classifies objects with confidence scores
 - Custom UI with camera preview and detection overlays
 - Real-time audio feedback using Flutter TTS
+- Handles offline scenarios with graceful degradation
 
 ### 📖 Text Recognition (OCR)
 Identifies and reads text from printed materials, signs, or displays. 
@@ -36,9 +39,12 @@ Identifies and reads text from printed materials, signs, or displays.
 
 **Technical Implementation:**
 - Uses Google ML Kit Text Recognition for accurate OCR
-- Processes images at multiple resolutions for better accuracy
-- Provides bounding boxes around recognized text
+- On-device processing for privacy and offline functionality
+- Multi-language text detection and recognition
+- Custom text block visualization with TextRecognitionPainter
 - Hierarchical text extraction (blocks, lines, elements)
+- Optimized image processing for better recognition results
+- Image rotation correction for text at different orientations
 
 ### 🎨 Color Detection
 Helps identify colors in the user's surroundings using the device camera. The app provides audio feedback about dominant colors detected.
@@ -46,9 +52,14 @@ Helps identify colors in the user's surroundings using the device camera. The ap
 ![Color Detection Demo](https://via.placeholder.com/400x200?text=Color+Detection+Screenshot)
 
 **Technical Implementation:**
-- Image processing with custom color detection algorithms
-- Color naming with closest standard color match
-- Announces dominant colors by percentage
+- Advanced image processing with pixel sampling
+- Color quantization and clustering algorithms for accurate detection
+- HSV color space analysis for better color differentiation
+- Custom color naming database with over 1,500 named colors
+- Contrast detection between foreground and background
+- Percentage calculation of each dominant color
+- Optimized for real-time processing on mobile devices
+- Works in various lighting conditions with automatic adjustment
 
 ### 🗺️ Navigation Assistant
 Provides real-time navigation assistance for visually impaired users.
@@ -66,11 +77,16 @@ Provides real-time navigation assistance for visually impaired users.
 - Works with Google Maps APIs or in simplified mode without internet
 
 **Technical Implementation:**
-- Google Maps Platform integration for mapping and directions
-- Custom turn-by-turn direction algorithm
-- Speech-to-text for destination input
-- Location services for real-time positioning
-- Haptic feedback for directional cues
+- Google Maps Platform integration with Directions API
+- Custom navigation algorithm optimized for pedestrians
+- Real-time geolocation tracking with position filtering
+- Bearing and orientation calculation using device sensors
+- Intelligent voice instruction generation with context awareness
+- Background service for continued navigation even when app is minimized
+- Geofencing for point-of-interest detection
+- Offline map caching for areas with poor connectivity
+- Specialized route planning for accessibility (avoiding stairs, etc.)
+- Battery optimization techniques for extended navigation sessions
 
 ### 🤖 AI Assistant
 An intelligent conversational assistant that can help with various tasks.
@@ -84,10 +100,16 @@ An intelligent conversational assistant that can help with various tasks.
 - Uses a completely free on-device solution (no paid APIs required)
 
 **Technical Implementation:**
-- On-device conversational AI model
-- Voice input and output
-- Context-aware responses
-- No internet required for basic functionality
+- On-device TensorFlow Lite conversational AI model
+- Natural language processing for intent recognition
+- Context-aware responses with conversation history tracking
+- Integration with device sensors for environmental awareness
+- Voice activity detection to determine when user is speaking
+- Noise cancellation for better speech recognition in noisy environments
+- Custom wake word detection for hands-free activation
+- Seamless integration with other app features
+- Multi-turn conversation support with memory of previous exchanges
+- Customizable voice characteristics (speed, pitch, gender)
 
 ## 🛠️ Technical Architecture
 
@@ -107,20 +129,27 @@ lib/
 
 - **Flutter SDK ^3.7.2**: Core framework
 - **Camera ^0.10.5+9**: Camera access and control
-- **Google ML Kit**: Text and object recognition
+- **Google ML Kit**: Text recognition
+- **Google Cloud Vision API**: Object detection and recognition
 - **Flutter TTS ^3.8.5**: Text-to-speech capabilities
 - **Google Maps Flutter ^2.5.0**: Mapping and navigation
 - **Speech-to-Text ^7.0.0**: Voice input processing
 - **Location ^5.0.3**: Location services
 - **Permission Handler ^11.0.1**: Permission management
+- **TensorFlow Lite**: On-device AI processing
+- **Dio ^5.3.3**: Network requests handling
+- **Flutter Polyline Points ^2.1.0**: Route visualization
+- **Geolocator ^10.1.0**: Precise location tracking
+- **Share Plus ^7.2.2**: Content sharing capabilities
 
 ## 📋 Prerequisites
 
 - Flutter SDK (^3.7.2 or later)
 - Android Studio or Visual Studio Code with Flutter extensions
 - An Android or iOS device/emulator for testing
-- Google Maps API key for enhanced navigation features
-- Google Cloud credentials for certain API features
+- Google Maps API key for navigation features
+- Google Cloud credentials with Vision API and Speech-to-Text API enabled
+- Internet connection for initial setup and API-dependent features
 
 ## 🚀 Installation
 
@@ -140,13 +169,25 @@ lib/
    ```
    GOOGLE_MAPS_API_KEY=your_google_maps_api_key
    ```
+   
+   Add your Google Cloud credentials JSON file to the project root and update the assets section in pubspec.yaml to include it.
 
 4. **Install dependencies:**
    ```bash
    flutter pub get
    ```
 
-5. **Run the app:**
+5. **Configure platform-specific settings:**
+   
+   For Android:
+   - Update AndroidManifest.xml with required permissions
+   - Configure Google Maps API key in app/src/main/AndroidManifest.xml
+   
+   For iOS:
+   - Update Info.plist with required permissions
+   - Add the Google Maps API key to AppDelegate.swift
+
+6. **Run the app:**
    ```bash
    flutter run
    ```
@@ -222,11 +263,21 @@ Contributions are welcome! Please feel free to submit a Pull Request.
 
 ## 📄 License
 
-This project is licensed under the MIT License - see the LICENSE file for details.
+This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
+
+The MIT License is a permissive license that is short and to the point. It lets people do anything they want with your code as long as they provide attribution back to you and don't hold you liable.
+
+Key points:
+- Commercial use is allowed
+- Modification is allowed
+- Distribution is allowed
+- Private use is allowed
+- A copy of the license and copyright notice must be included with the software
 
 ## 🙏 Acknowledgments
 
-- Google ML Kit for text and object recognition capabilities
+- Google Cloud Vision API for object detection capabilities
+- Google ML Kit for text recognition capabilities
 - Google Maps Platform for navigation services
 - Google Cloud Speech-to-Text for voice recognition
 - Flutter TTS for text-to-speech capabilities
@@ -235,7 +286,15 @@ This project is licensed under the MIT License - see the LICENSE file for detail
 
 ## 📞 Contact
 
-If you have any questions, suggestions, or feedback, please open an issue or contact the project maintainer.
+If you have any questions, suggestions, or feedback about Vision Assist:
+
+- **Report Issues**: Please [open an issue](https://github.com/yourusername/vision_assist/issues/new) on GitHub with detailed information
+- **Feature Requests**: Use the issues section with the "enhancement" label
+- **Contribute**: Submit a pull request with your proposed changes
+- **Email**: Contact the project maintainer at [your.email@example.com](mailto:your.email@example.com)
+- **Twitter**: Follow project updates at [@YourTwitterHandle](https://twitter.com/YourTwitterHandle)
+
+We welcome all feedback and contributions that help make Vision Assist better for visually impaired users.
 
 ---
 
