@@ -5,7 +5,7 @@ import 'package:flutter/foundation.dart' show debugPrint;
 
 class GoogleMapsService {
   static const String _baseUrl = 'https://maps.googleapis.com/maps/api';
-  static const String apiKey = 'AIzaSyBwPJM7s9ZwG7CYKltKygYGGvToPFM0_BA';
+  static const String apiKey = 'YOUR_APIKEY'; // Add your API Key here
 
   final Dio _dio = Dio();
 
