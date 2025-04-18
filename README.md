@@ -281,14 +281,6 @@ Vision Assist is specifically designed with accessibility in mind:
 - **Compatibility with screen readers**: Works with TalkBack and VoiceOver
 - **Voice-controlled features**: Hands-free operation throughout the app
 
-## 🧪 Testing
-
-Run the included test suite to verify the app's functionality:
-
-```bash
-flutter test
-```
-
 ## 🤝 Contributing
 
 Contributions are welcome! Please feel free to submit a Pull Request.
@@ -298,41 +290,6 @@ Contributions are welcome! Please feel free to submit a Pull Request.
 3. Commit your changes (`git commit -m 'Add some AmazingFeature'`)
 4. Push to the branch (`git push origin feature/AmazingFeature`)
 5. Open a Pull Request
-
-## 📄 License
-
-This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
-
-The MIT License is a permissive license that is short and to the point. It lets people do anything they want with your code as long as they provide attribution back to you and don't hold you liable.
-
-Key points:
-- Commercial use is allowed
-- Modification is allowed
-- Distribution is allowed
-- Private use is allowed
-- A copy of the license and copyright notice must be included with the software
-
-## 🙏 Acknowledgments
-
-- Google Cloud Vision API for object detection capabilities
-- Google ML Kit for text recognition capabilities
-- Google Maps Platform for navigation services
-- Google Cloud Speech-to-Text for voice recognition
-- Flutter TTS for text-to-speech capabilities
-- The Flutter team for the wonderful framework
-- All contributors who have helped shape this project
-
-## 📞 Contact
-
-If you have any questions, suggestions, or feedback about Vision Assist:
-
-- **Report Issues**: Please [open an issue](https://github.com/yourusername/vision_assist/issues/new) on GitHub with detailed information
-- **Feature Requests**: Use the issues section with the "enhancement" label
-- **Contribute**: Submit a pull request with your proposed changes
-- **Email**: Contact the project maintainer at [your.email@example.com](mailto:your.email@example.com)
-- **Twitter**: Follow project updates at [@YourTwitterHandle](https://twitter.com/YourTwitterHandle)
-
-We welcome all feedback and contributions that help make Vision Assist better for visually impaired users.
 
 ---
 
