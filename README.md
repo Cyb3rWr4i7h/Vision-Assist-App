@@ -1,7 +1,5 @@
 # Vision Assist
 
-![Vision Assist Banner](https://via.placeholder.com/800x200?text=Vision+Assist)
-
 ## 🔍 Overview
 
 Vision Assist is a comprehensive Flutter application designed to assist visually impaired individuals in navigating their environment and understanding the world around them. The app leverages modern mobile device capabilities like camera, GPS, and AI to provide a suite of accessibility tools that help users perceive and interact with their surroundings.
@@ -15,7 +13,6 @@ Vision Assist is a comprehensive Flutter application designed to assist visually
 ### 🔍 Object Detection
 Helps identify objects in the user's surroundings using the device camera. The app provides audio feedback about detected objects and their positions.
 
-![Object Detection Demo](https://via.placeholder.com/400x200?text=Object+Detection+Screenshot)
 
 **Technical Implementation:**
 - Uses Google Cloud Vision API for advanced object recognition
@@ -28,7 +25,6 @@ Helps identify objects in the user's surroundings using the device camera. The a
 ### 📖 Text Recognition (OCR)
 Identifies and reads text from printed materials, signs, or displays. 
 
-![Text Recognition Demo](https://via.placeholder.com/400x200?text=Text+Recognition+Screenshot)
 
 **Features:**
 - Capture images with the camera or select from gallery
@@ -49,7 +45,6 @@ Identifies and reads text from printed materials, signs, or displays.
 ### 🎨 Color Detection
 Helps identify colors in the user's surroundings using the device camera. The app provides audio feedback about dominant colors detected.
 
-![Color Detection Demo](https://via.placeholder.com/400x200?text=Color+Detection+Screenshot)
 
 **Technical Implementation:**
 - Advanced image processing with pixel sampling
@@ -63,8 +58,6 @@ Helps identify colors in the user's surroundings using the device camera. The ap
 
 ### 📱 QR Code Scanner
 Scans and interprets QR codes and barcodes with accessibility features for visually impaired users.
-
-![QR Code Scanner Demo](https://via.placeholder.com/400x200?text=QR+Code+Scanner+Screenshot)
 
 **Features:**
 - Scan QR codes and barcodes using device camera
@@ -88,7 +81,6 @@ Scans and interprets QR codes and barcodes with accessibility features for visua
 ### 🗺️ Navigation Assistant
 Provides real-time navigation assistance for visually impaired users.
 
-![Navigation Demo](https://via.placeholder.com/400x200?text=Navigation+Screenshot)
 
 **Features:**
 - Voice-guided turn-by-turn directions with distance and cardinal orientation
@@ -115,7 +107,6 @@ Provides real-time navigation assistance for visually impaired users.
 ### 🤖 AI Assistant
 An intelligent conversational assistant that can help with various tasks.
 
-![AI Assistant Demo](https://via.placeholder.com/400x200?text=AI+Assistant+Screenshot)
 
 **Features:**
 - Answer questions about the user's environment
@@ -181,12 +172,12 @@ lib/
 
 1. **Clone the repository:**
    ```bash
-   git clone https://github.com/yourusername/vision_assist.git
+   git clone https://github.com/Cyb3rWr4i7h/vision-assist-app.git
    ```
 
 2. **Navigate to the project directory:**
    ```bash
-   cd vision_assist
+   cd vision-assist-app
    ```
 
 3. **Set up your API keys:**
